@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- host/ios/Info.plist.in: the app's Info.plist (CMake fills the ${MACOSX_BUNDLE_*} values). -->
+<!-- host/ios/Info.plist.in: the app's Info.plist (CMake fills the MACOSX_BUNDLE_ values below). -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
