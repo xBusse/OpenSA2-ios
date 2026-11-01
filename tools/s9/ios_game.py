@@ -253,7 +253,9 @@ def link_game(args: argparse.Namespace) -> int:
     if clang_major(str(llvm_clang)) != 20:
         raise SystemExit(f"{llvm_clang} is not clang 20 (the lifted extras' registration needs it, as on Android)")
     target = ["-target", TRIPLE, "-isysroot", sdk]
-    common = [L4.OPT, "-w", *FP_FLAGS, "-funsigned-char", "-I", str(src / "runtime"), "-I", str(C.REMILL_INC)]
+    # -fno-common: a tentative definition (`uint64_t x;`) stays a common symbol through `ld -r`,
+    # which -exported_symbols_list does not hide, so the game would export its globals.
+    common = [L4.OPT, "-w", *FP_FLAGS, "-funsigned-char", "-fno-common", "-I", str(src / "runtime"), "-I", str(C.REMILL_INC)]
     cflags = [cc, *target, *common, *GAME_DEFINES, "-c"]
     cxxflags = [cxx, *target, *common, *GAME_DEFINES, "-std=c++17", "-c"]
     table = GEN / "s3" / "link" / AG.TAG / "function_table_whole.c"
@@ -308,7 +310,9 @@ def link_game(args: argparse.Namespace) -> int:
     if prelinked.exists():
         prelinked.unlink()
     t2 = time.time()
-    ld = [xcrun("--sdk", "iphoneos", "--find", "ld"), "-r", "-arch", "arm64",
+    # -d: any common symbol left (an object compiled elsewhere) is defined here, so the export
+    # list hides it too.
+    ld = [xcrun("--sdk", "iphoneos", "--find", "ld"), "-r", "-d", "-arch", "arm64",
           "-platform_version", "ios", IOS_MIN, sdk_version,
           "-exported_symbols_list", str(EXPORTS), "-filelist", str(filelist), "-o", str(prelinked)]
     p = subprocess.run(ld, capture_output=True, text=True, timeout=7200)
@@ -325,7 +329,9 @@ def link_game(args: argparse.Namespace) -> int:
                               capture_output=True, text=True).stdout.split()
     expected = [l.strip() for l in EXPORTS.read_text().splitlines() if l.strip()]
     if sorted(exported) != sorted(expected):
-        raise SystemExit(f"the prelinked game exports {sorted(exported)[:12]}, not {expected}")
+        extra, missing = sorted(set(exported) - set(expected)), sorted(set(expected) - set(exported))
+        raise SystemExit(f"the prelinked game's exports are not {EXPORTS.name}'s: {len(extra)} more "
+                         f"(first {extra[:12]}), {len(missing)} missing {missing}")
     (out / "game.env").write_text("\n".join(plan["env_lines"]) + "\n")
     rec = {"schema": "sa2-s9-ios-link/v1", "generated_by": SELF, "triple": TRIPLE, "sdk": sdk_version,
            "f80_mode": args.f80, "hooks": plan["hooks"], "wraps": plan["wraps"], "wrapped": wrapped,
