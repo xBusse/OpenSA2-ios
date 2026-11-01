@@ -419,7 +419,10 @@ class IosBuilder(A.Builder):
         self.sh(["xcodebuild", "-project", project, "-scheme", "SA2Recomp", "-configuration", "Release",
                  "-sdk", "iphoneos", "-derivedDataPath", derived, "CODE_SIGNING_ALLOWED=NO", "CODE_SIGNING_REQUIRED=NO",
                  "CODE_SIGN_IDENTITY=", "build"], log=self.b / "gen/xcodebuild.log")
-        apps = sorted(derived.glob("Build/Products/Release-iphoneos/*.app"))
+        # A CMake-generated project sets CONFIGURATION_BUILD_DIR to <project dir>/Release-iphoneos,
+        # so the app lands there rather than under the derived data's Build/Products.
+        apps = sorted([*self.xcode_dir().glob("Release-iphoneos/*.app"),
+                       *derived.glob("Build/Products/Release-iphoneos/*.app")])
         if not apps:
             raise Refused("xcodebuild made no .app (gen/xcodebuild.log)")
         out = self.out / "SA2Recomp.ipa"
