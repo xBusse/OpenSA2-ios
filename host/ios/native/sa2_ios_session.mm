@@ -47,6 +47,7 @@
 #include "sa2_ios_console.h"
 #include "sa2_ios_game.h"
 #include "sa2_ios_ingame.h"
+#include "sa2_ios_prof.h"
 
 #include "sa2_config.h"
 #include "sa2_install.h"
@@ -619,11 +620,19 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
     });
 
     // The speed line every 30 s (frames handed on a second), as the Android session's perf line says it.
+    // With the sampler on (the default; SA2_IOS_PROF=0 in game.env.extra turns it off) the 30 s are a
+    // window of sa2_ios_prof.h: where every thread's time went, in <session>/prof.txt, and a line.
+    const std::string* prof_env = env_find(genv, "SA2_IOS_PROF");
+    const bool prof_on = !(prof_env && *prof_env == "0");
     std::thread perf_thread([&] {
+        pthread_setname_np("sa2-perf");
         uint64_t last = 0;
         double t_last = sa2p::monotonic_seconds();
         while (!player_done.load()) {
-            for (int i = 0; i < 300 && !player_done.load(); i++) sa2l::sleep_ms(100);
+            std::string prof_line;
+            if (prof_on) prof_line = sa2ios::prof_window(30.0, 10, session + "/prof.txt", player_done);
+            else
+                for (int i = 0; i < 300 && !player_done.load(); i++) sa2l::sleep_ms(100);
             if (player_done.load()) break;
             const double now = sa2p::monotonic_seconds();
             const uint64_t f = relay.frames_out();
@@ -631,6 +640,7 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
             say("perf: %.1f frames/s over %.0f s; thermal state %s", double(f - last) / (now - t_last), now - t_last,
                 ts == NSProcessInfoThermalStateNominal ? "nominal" : ts == NSProcessInfoThermalStateFair ? "fair"
                 : ts == NSProcessInfoThermalStateSerious ? "serious" : "critical");
+            if (!prof_line.empty()) say("%s", prof_line.c_str());
             last = f;
             t_last = now;
         }

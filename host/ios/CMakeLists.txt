@@ -40,7 +40,8 @@ set(NATIVE
     native/sa2_ios_main.mm
     native/sa2_ios_session.mm
     native/sa2_ios_console.mm
-    native/sa2_ios_ingame.mm)
+    native/sa2_ios_ingame.mm
+    native/sa2_ios_prof.mm)
 set(SWIFT
     app/Launcher.swift
     app/AppModel.swift
