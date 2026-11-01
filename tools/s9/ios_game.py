@@ -310,9 +310,7 @@ def link_game(args: argparse.Namespace) -> int:
     if prelinked.exists():
         prelinked.unlink()
     t2 = time.time()
-    # -d: any common symbol left (an object compiled elsewhere) is defined here, so the export
-    # list hides it too.
-    ld = [xcrun("--sdk", "iphoneos", "--find", "ld"), "-r", "-d", "-arch", "arm64",
+    ld = [xcrun("--sdk", "iphoneos", "--find", "ld"), "-r", "-arch", "arm64",
           "-platform_version", "ios", IOS_MIN, sdk_version,
           "-exported_symbols_list", str(EXPORTS), "-filelist", str(filelist), "-o", str(prelinked)]
     p = subprocess.run(ld, capture_output=True, text=True, timeout=7200)
