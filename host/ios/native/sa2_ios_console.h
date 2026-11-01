@@ -22,6 +22,11 @@ void sa2ios_console_switch(const char* path, int truncate);
 void sa2ios_console_path(char* out, size_t n);
 // One line from the app itself (the session's report lines, the UI's notes), through the capture.
 void sa2ios_console_line(const char* line);
+// Waits (at most about a second) until every byte written to stdout and stderr so far is in the
+// file: a marker through the pipe, as a switch writes. Only write(2), atomics and nanosleep, so the
+// game's _exit (sa2_ios_game.c), which a signal handler may call, can wait for its last lines before
+// it ends the app; it also runs at the app's exit (atexit). Without the capture, it returns at once.
+void sa2ios_console_drain(void);
 
 #ifdef __cplusplus
 }

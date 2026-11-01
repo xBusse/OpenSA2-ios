@@ -3,6 +3,7 @@
  * Compiled into the game's prelinked object (tools/s9/ios_game.py) *without* the exit, _exit and
  * atexit renames the game's own sources get, so the real ones are reachable here. */
 #include "sa2_ios_game.h"
+#include "sa2_ios_console.h"   /* sa2ios_console_drain: the app's, resolved when the app links the game */
 
 #include <errno.h>
 #include <fcntl.h>
@@ -104,6 +105,9 @@ __attribute__((noreturn)) void sa2_ios_game__exit(int code) {
     ssize_t ignored = write(2, said, sizeof said - 1);
     (void)ignored;
     announce(SA2_IOS_GAME_EXITED, code, "_exit");
+    /* The console's reader (the app's, sa2_ios_console.mm) writes the last lines, this one and
+     * whatever the runtime said before it, to the session's console.log before the app ends. */
+    sa2ios_console_drain();
     _exit(code);
 }
 

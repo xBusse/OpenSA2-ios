@@ -9,6 +9,8 @@
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -112,6 +114,12 @@ extern "C" void sa2ios_console_start(const char* path) {
     pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
     pthread_create(&t, &at, reader, reinterpret_cast<void*>(intptr_t(p[0])));
     pthread_attr_destroy(&at);
+    // An exit() anywhere in the app (the player's usage errors, a library's) keeps its last lines.
+    std::atexit([] {
+        std::fflush(stdout);
+        std::fflush(stderr);
+        sa2ios_console_drain();
+    });
 }
 
 extern "C" void sa2ios_console_switch(const char* path, int truncate) {
@@ -132,6 +140,15 @@ extern "C" void sa2ios_console_switch(const char* path, int truncate) {
 extern "C" void sa2ios_console_path(char* out, size_t n) {
     std::lock_guard<std::mutex> hold(g_mu);
     std::snprintf(out, n, "%s", g_path.c_str());
+}
+
+extern "C" void sa2ios_console_drain(void) {
+    if (!g_started.load() || g_pipe_w < 0) return;
+    const uint64_t want = g_marks_sent.fetch_add(1) + 1;
+    ssize_t ignored = write(g_pipe_w, kMark, sizeof kMark - 1);
+    (void)ignored;
+    const struct timespec step = {0, 5000000};
+    for (int i = 0; i < 200 && g_marks_seen.load() < want; i++) nanosleep(&step, nullptr);
 }
 
 extern "C" void sa2ios_console_line(const char* line) {

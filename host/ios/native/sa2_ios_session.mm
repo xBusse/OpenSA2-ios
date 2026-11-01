@@ -59,6 +59,9 @@
 
 #include <SDL3/SDL.h>
 
+#include <mach/mach.h>
+#include <os/proc.h>
+
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
@@ -102,6 +105,16 @@ void write_report_locked() {
     if (!g_report.empty()) sa2p::write_file_atomic(g_report, text);
     if (!g_session_report.empty()) sa2p::write_file_atomic(g_session_report, text);
 }
+
+// The app's memory as iOS counts it against its limit (phys_footprint), and what iOS says is still
+// available to it before that limit (os_proc_available_memory), in MiB; -1 where not read.
+double footprint_mib() {
+    task_vm_info_data_t vm{};
+    mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&vm), &n) != KERN_SUCCESS) return -1;
+    return double(vm.phys_footprint) / 1048576.0;
+}
+double available_mib() { return double(os_proc_available_memory()) / 1048576.0; }
 
 // One line of the session's report: in report.txt, last-session.txt and the console.
 void say(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -637,13 +650,36 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
             const double now = sa2p::monotonic_seconds();
             const uint64_t f = relay.frames_out();
             NSProcessInfoThermalState ts = [NSProcessInfo processInfo].thermalState;
-            say("perf: %.1f frames/s over %.0f s; thermal state %s", double(f - last) / (now - t_last), now - t_last,
+            say("perf: %.1f frames/s over %.0f s; thermal state %s; memory %.0f MiB, %.0f MiB more available",
+                double(f - last) / (now - t_last), now - t_last,
                 ts == NSProcessInfoThermalStateNominal ? "nominal" : ts == NSProcessInfoThermalStateFair ? "fair"
-                : ts == NSProcessInfoThermalStateSerious ? "serious" : "critical");
+                : ts == NSProcessInfoThermalStateSerious ? "serious" : "critical", footprint_mib(), available_mib());
             if (!prof_line.empty()) say("%s", prof_line.c_str());
             last = f;
             t_last = now;
         }
+    });
+
+    // The memory, every second, to <session>/mem.tsv (each line flushed): when iOS ends the app for its
+    // memory, often without a report, the file's last lines show the climb to the limit. The report
+    // gets the peak at the end, and the perf line the footprint.
+    std::atomic<double> mem_peak{0};
+    std::thread mem_thread([&] {
+        pthread_setname_np("sa2-mem");
+        FILE* f = std::fopen((session + "/mem.tsv").c_str(), "w");
+        if (f) std::fprintf(f, "# seconds\tfootprint_mib\tavailable_mib\tframes\n");
+        const double t0 = sa2p::monotonic_seconds();
+        while (!player_done.load()) {
+            const double fp = footprint_mib(), av = available_mib();
+            if (fp > mem_peak.load()) mem_peak.store(fp);
+            if (f) {
+                std::fprintf(f, "%.1f\t%.0f\t%.0f\t%llu\n", sa2p::monotonic_seconds() - t0, fp, av,
+                             (unsigned long long)relay.frames_out());
+                std::fflush(f);
+            }
+            for (int i = 0; i < 10 && !player_done.load(); i++) sa2l::sleep_ms(100);
+        }
+        if (f) std::fclose(f);
     });
 
     // The watch: the game's end or the player's end request stops the game; the player is then given
@@ -729,6 +765,8 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
     tweaks_thread.join();
     host_tweaks_thread.join();
     perf_thread.join();
+    mem_thread.join();
+    say("memory: peak footprint %.0f MiB (mem.tsv)", mem_peak.load());
     watch.join();
     relay_thread.join();
     const sa2l::RelayStats rs = relay.stats();
