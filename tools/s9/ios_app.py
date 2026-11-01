@@ -156,8 +156,14 @@ class IosBuilder(A.Builder):
         return d
 
     def dxvk_flags(self, source: str, record: Path) -> list[str]:
-        """DXVK's Linux flags for `source` (android_app's), x86's dropped, its paths on this checkout."""
-        return [rebase(f) for f in super().dxvk_flags(source, record)]
+        """DXVK's Linux flags for `source` (android_app's), x86's dropped, its paths on this checkout.
+        The record android_app writes is moved too: the translator's identity pass reads its flags
+        from it (extract_dxvk_shader.py identity --unit RECORD:SOURCE), not from what this returns."""
+        flags = [rebase(f) for f in super().dxvk_flags(source, record)]
+        doc = json.loads(record.read_text())
+        doc["flags"] = flags
+        record.write_text(json.dumps(doc, indent=1) + "\n")
+        return flags
 
     def dxbc(self) -> dict:
         # The compile commands name the Linux machine's paths: android_app's phase reads them through
