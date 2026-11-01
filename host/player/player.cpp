@@ -2167,6 +2167,12 @@ bool Player::create_device(const Sa2Record& r, Cat* cat) {
     if (!setup_window(bb_w_, bb_h_)) return false;
     pump_events();
     if (stop_) return false;
+#if defined(SA2_IOS)
+    // iOS (host/ios): SDL is linked into the app and built without Vulkan (tools/s9/ios_app.py,
+    // SDL_VULKAN=OFF); the renderer's device is SDL_gpu's Metal one. There is no Vulkan instance
+    // extension to ask for (SDL_Vulkan_GetInstanceExtensions calls a video-driver hook UIKit leaves
+    // null without Vulkan) and no libSDL3 to find by name, so neither check applies.
+#else
     Uint32 nexts = 0;
     if (!SDL_Vulkan_GetInstanceExtensions(&nexts) || !nexts)
         return device_failure(strf("SDL_Vulkan_GetInstanceExtensions: %s", SDL_GetError()));
@@ -2188,6 +2194,7 @@ bool Player::create_device(const Sa2Record& r, Cat* cat) {
     else return device_failure("libSDL3.so.0 does not resolve to the SDL this process loaded (DXVK's WSI would "
                                "load another, or none)");
 #endif
+#endif  // SA2_IOS
     using Create9 = IDirect3D9* (*)(UINT);
 #if SA2_PLAYER_GPU
     // host/d3d9gpu's factory, linked into this binary: no library to load or verify; the
