@@ -34,7 +34,12 @@ bool stat_path(const std::string& path, Stat& out) {
     out.is_dir = S_ISDIR(st.st_mode);
     out.is_file = S_ISREG(st.st_mode);
     out.size = uint64_t(st.st_size);
+#if defined(__APPLE__)
+    // Darwin names the modification time st_mtimespec.
+    out.mtime_ns = int64_t(st.st_mtimespec.tv_sec) * 1000000000LL + st.st_mtimespec.tv_nsec;
+#else
     out.mtime_ns = int64_t(st.st_mtim.tv_sec) * 1000000000LL + st.st_mtim.tv_nsec;
+#endif
     return true;
 }
 
