@@ -727,6 +727,10 @@ void Sa2StreamReader::wait_readable() {
 #if defined(__BIONIC__)
     // android_app.py arm_portable: bionic's FILE is opaque (no read-ahead count), so no idle wait.
     if (true) return;
+#elif defined(__APPLE__)
+    // Darwin's FILE (the iOS app, host/ios) keeps its read-ahead count in _r, the bytes left in its
+    // buffer: glibc's _IO_read_end - _IO_read_ptr.
+    if (!live_ || !idle_hook_ || f_->_r > 0) return;
 #else
     if (!live_ || !idle_hook_ || f_->_IO_read_ptr < f_->_IO_read_end) return;
 #endif

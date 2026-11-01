@@ -1,6 +1,9 @@
 // sa2_platform_posix.cpp: sa2_platform.h for Linux and other POSIX hosts.
 #ifndef _WIN32
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #include "sa2_platform.h"
 
 #include <dirent.h>
@@ -206,6 +209,8 @@ double monotonic_seconds() {
 std::string os_name() {
 #if defined(__linux__)
     return "linux";
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+    return "ios";
 #elif defined(__APPLE__)
     return "macos";
 #else

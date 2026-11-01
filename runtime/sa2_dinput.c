@@ -1343,6 +1343,13 @@ static void on_term(int sig) {
 }
 #endif
 
+/* The stop a SIGTERM asks for, asked by a host that runs the game on a thread of its own process
+ * (the iOS app, host/ios: there is no process of the game's to send a signal to, and a SIGTERM
+ * would reach the app itself). The next keyboard poll posts WM_QUIT, as after the signal. */
+void sa2_dinput_request_stop(void) {
+    g_in_stop = 1;
+}
+
 static const char *nonempty(const char *name) {
     const char *v = getenv(name);
     return v && *v ? v : NULL;

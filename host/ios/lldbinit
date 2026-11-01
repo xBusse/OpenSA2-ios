@@ -1,0 +1,13 @@
+# host/ios/lldbinit: what the Xcode scheme's lldb runs first (host/ios/CMakeLists.txt).
+#
+# The runtime handles some faults itself (runtime/sa2_trap.c: a guest call that touches memory it
+# must not unwinds to its caller with a trap record). Under a debugger those arrive as Mach
+# exceptions first; let them through to the runtime's own signal handlers, so a session plays under
+# Xcode as it does without it. A fault the runtime does not handle still stops the app, with its
+# report in the session's console.log.
+settings set platform.plugin.darwin.ignored-exceptions EXC_BAD_ACCESS|EXC_BAD_INSTRUCTION|EXC_ARITHMETIC
+process handle SIGSEGV --pass true --stop false --notify true
+process handle SIGBUS --pass true --stop false --notify true
+process handle SIGFPE --pass true --stop false --notify true
+process handle SIGPIPE --pass true --stop false --notify false
+process handle SIGURG --pass true --stop false --notify false

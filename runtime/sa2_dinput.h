@@ -615,6 +615,9 @@ void sa2_dinput_config_from_env(void);
 int  sa2_dinput_device_enabled(void);
 const char *sa2_dinput_break_name(void);   /* "" when none */
 const char *sa2_dinput_input_source(void); /* "", "script" or "fifo" */
+/* The stop SIGTERM asks for, for a host with no game process to signal (the iOS app runs the
+ * game on a thread of its own process): the next keyboard poll posts WM_QUIT. */
+void sa2_dinput_request_stop(void);
 void sa2_dinput_input_stats_get(sa2_di_input_stats *out);
 
 /* Optional observer after a FIFO keyboard poll applies complete records and

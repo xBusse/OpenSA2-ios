@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- host/ios/SA2Recomp-increased-memory.entitlements (-DSA2_IOS_INCREASED_MEMORY=ON): a larger memory
+     limit before iOS ends the app, on devices that allow one. A paid developer team's entitlement; a
+     free account cannot sign it. -->
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
+</dict>
+</plist>

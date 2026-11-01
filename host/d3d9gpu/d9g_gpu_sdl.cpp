@@ -6,6 +6,7 @@
 #include "d9g.h"
 #include "d9g_props.h"
 #include "tweaks/tex-filter.h"
+#include "sa2_gpu_shader.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -999,8 +1000,10 @@ private:
         ci.stage = stage == shader::Stage::Vertex ? SDL_GPU_SHADERSTAGE_VERTEX : SDL_GPU_SHADERSTAGE_FRAGMENT;
         ci.num_samplers = b.num_samplers; ci.num_uniform_buffers = b.num_uniform_buffers;
         auto object = std::make_unique<ShaderObject>(ShaderObject{nullptr});
-        SDL_GPUShader* s = SDL_CreateGPUShader(dev_, &ci);
-        if (!s) { err_ = std::string("SDL_CreateGPUShader: ") + SDL_GetError(); return nullptr; }
+        // SPIR-V, or MSL converted from it on a Metal device (host/player/sa2_gpu_shader.h).
+        std::string why;
+        SDL_GPUShader* s = sa2_gpu::shader_from_spirv(dev_, ci, &why);
+        if (!s) { err_ = why; return nullptr; }
         object->shader = s;
         ShaderObject* result = object.get();
         try { shaders_.emplace(std::move(key), std::move(object)); }
@@ -1705,6 +1708,93 @@ constexpr const char kLiveSessionProperty[] = "sa2.live_session";
 
 }  // namespace
 
+#if defined(__APPLE__) && defined(SA2_HAVE_SHADERCROSS)
+// The Metal device (the iOS app, host/ios): SDL_gpu has no Vulkan driver there, so the device is its
+// Metal one, made to take MSL, and every SPIR-V module the translator builds is converted to MSL as it
+// is made (host/player/sa2_gpu_shader.h, SDL_shadercross). There is no Vulkan device to read DXVK's
+// facts from (query_device_facts), so the translator is given the most conservative profile it has,
+// the one a driver offering only Vulkan 1.1 takes (ShaderProfile::vk11: SPIR-V 1.3, the GLSL450 memory
+// model, OpKill for demote, the state read as 32-bit words, no float controls, no 16-bit arithmetic),
+// with no vendor rule (driver ID 0) and no ClipDistance output (ShaderProfile::no_clip_distance: SA2
+// enables no user clip plane, and a draw that did is refused by name): the least SPIRV-Cross's MSL
+// backend has to understand. The SDL patch (patches/sdl3) reports no border addressing and no depth
+// clip with clamp on iOS, so the shader fallback and a live session's clip-only draws apply, as on a
+// stock SDL. The BC formats and D24S8 are asked of the device as on Vulkan (SdlGpu's constructor):
+// where it has none, DXT textures are decoded on the CPU and depth is D32_FLOAT_S8_UINT.
+static std::unique_ptr<Gpu> make_metal_gpu(bool debug, const CapsOff& off, std::string* err) {
+    const char* bc_prop = nullptr;
+    const bool bc_forced_off = test_switch("SA2_D3D9GPU_NO_BC", "debug.sa2.no_bc", &bc_prop);
+    if (bc_forced_off)
+        std::fprintf(stderr, "d3d9gpu: SA2_D3D9GPU_NO_BC=1: no BC format is sampled; DXT textures are decoded to BGRA8 "
+                             "on the CPU\n");
+    Report& r = report();
+    const SDL_PropertiesID props = SDL_CreateProperties();
+    if (!props) {
+        *err = std::string("SDL_CreateProperties: ") + SDL_GetError();
+        return nullptr;
+    }
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, debug);
+    SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, "metal");
+    r.x87_before = x87_cw();
+    r.mxcsr_before = mxcsr();
+    SDL_GPUDevice* dev = SDL_CreateGPUDeviceWithProperties(props);
+    r.x87_after = x87_cw();
+    r.mxcsr_after = mxcsr();
+    r.fpu_measured = true;
+    SDL_DestroyProperties(props);
+    if (!dev) {
+        *err = std::string("SDL_CreateGPUDeviceWithProperties (Metal, MSL): ") + SDL_GetError();
+        return nullptr;
+    }
+    auto gpu = std::make_unique<SdlGpu>(dev, debug, off);
+    GpuInfo& info = const_cast<GpuInfo&>(gpu->info());
+    if (info.sdl_patched != info.sdl_capabilities_present) {
+        *err = "the SDL3 linked (" + info.sdl_revision + ") is " + (info.sdl_patched ? "marked as patched" : "not marked as patched") +
+               " but " + (info.sdl_capabilities_present ? "reports" : "does not report") +
+               " the patch's device properties (patches/sdl3)";
+        return nullptr;
+    }
+    // No Vulkan query: the values a Metal device has, named as such. Metal's largest point is 511 pixels.
+    info.vk_query_ok = true;
+    info.vk_query = "Metal: no Vulkan device; fixed values";
+    info.vk_point_size_max = 511.0f;
+    info.vulkan_options = "none (Metal; SPIR-V converted to MSL " + std::string(sa2_gpu::kMslVersion) +
+                          " by SDL_shadercross)";
+    info.sub_dword_access = false;
+    info.clip_distance = false;
+    info.clip_distance_forced_off = false;
+    info.bc_forced_off = bc_forced_off;
+    info.sdl_features_dropped = "";
+    info.sampler_anisotropy = true;
+    info.depth_clamp_forced_off = false;
+    info.vk11 = true;
+    info.vk11_reason = "the Metal device: the conservative SPIR-V 1.3 profile, converted to MSL";
+    info.live_session = SDL_GetBooleanProperty(SDL_GetGlobalProperties(), kLiveSessionProperty, false);
+    info.depth_clamp_clip_only = !info.depth_clip_and_clamp && info.live_session;
+    if (!info.depth_clip_and_clamp)
+        std::fprintf(stderr, "d3d9gpu: no depth clip and clamp (Metal clips or clamps, never both): %s\n",
+                     info.depth_clamp_clip_only ? "the draws are clipped at the near and far planes without the clamp"
+                                                : "outside a live session each draw is refused (DEPTH_CLAMP_FALLBACK_OWED)");
+    shader::DeviceFacts& f = info.shader_facts;
+    f = shader::DeviceFacts{};
+    f.driver_id = 0;                                   // no DXVK driver rule names Apple's
+    f.driver_version_raw = 0;
+    f.min_storage_buffer_offset_alignment = 16;        // Apple GPUs need 4; 16 is every GPU's
+    f.max_uniform_buffer_range = 65536;
+    f.max_per_stage_descriptor_uniform_buffers = 1000000;   // no DXVK limit (the CPU model's value)
+    f.r32_storage_read_without_format = false;
+    f.sub_dword_access = false;
+    f.clip_distance = false;
+    f.vk11 = true;
+    info.shader_facts_ok = true;
+    info.shader_facts_query = "Metal: the conservative Vulkan 1.1 facts (no Vulkan device to read)";
+    std::fprintf(stderr, "d3d9gpu: Metal device %s; shaders are SPIR-V 1.3 converted to MSL %s (SDL_shadercross)\n",
+                 info.device_name.c_str(), sa2_gpu::kMslVersion);
+    return gpu;
+}
+#endif
+
 // SDL_CreateGPUDeviceWithProperties with the Vulkan driver named (the critic's A26), SPIR-V as the
 // only shader format, and SDL_GPUVulkanOptions asking for Vulkan 1.3 and the features the
 // translated modules need (R1, shader::VulkanFeatures: R0's chain and what the validation layer
@@ -1750,6 +1840,9 @@ constexpr const char kLiveSessionProperty[] = "sa2.live_session";
 // on any device. The choice is shader::next_device_request's; each step down is said once on stderr and
 // recorded (GpuInfo::vk11, vk11_reason, vk11_forced).
 std::unique_ptr<Gpu> make_sdl_gpu(bool debug, const CapsOff& off, std::string* err) {
+#if defined(__APPLE__) && defined(SA2_HAVE_SHADERCROSS)
+    return make_metal_gpu(debug, off, err);
+#endif
     const char* clip_prop = nullptr;
     const bool clip_forced_off = test_switch("SA2_D3D9GPU_NO_CLIPDIST", "debug.sa2.no_clipdist", &clip_prop);
     if (clip_forced_off)

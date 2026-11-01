@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "sa2_gpu_shader.h"
 #include "touch_overlay_spirv.h"
 
 namespace sa2_touch {
@@ -277,8 +278,8 @@ bool ensure_pipeline(Overlay* o) {
         return false;
     }
     if (o->pipe && o->pipe_format == fmt) return true;
-    if (!(SDL_GetGPUShaderFormats(o->dev) & SDL_GPU_SHADERFORMAT_SPIRV)) {
-        note_error(o, "the device takes no SPIR-V");
+    if (!sa2_gpu::takes_spirv(o->dev)) {
+        note_error(o, "the device takes no SPIR-V (and this build converts none to its format)");
         o->gpu_failed = true;
         return false;
     }
@@ -290,14 +291,16 @@ bool ensure_pipeline(Overlay* o) {
         ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
         ci.stage = SDL_GPU_SHADERSTAGE_VERTEX;
         ci.num_uniform_buffers = 1;
-        o->vs = SDL_CreateGPUShader(o->dev, &ci);
+        // SPIR-V, or MSL converted from it on a Metal device (sa2_gpu_shader.h: the iOS app).
+        std::string why;
+        o->vs = sa2_gpu::shader_from_spirv(o->dev, ci, &why);
         ci.code = reinterpret_cast<const Uint8*>(sa2_touch_spirv::kFragment);
         ci.code_size = sizeof sa2_touch_spirv::kFragment;
         ci.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
         ci.num_uniform_buffers = 0;
-        o->fs = o->vs ? SDL_CreateGPUShader(o->dev, &ci) : nullptr;
+        o->fs = o->vs ? sa2_gpu::shader_from_spirv(o->dev, ci, &why) : nullptr;
         if (!o->vs || !o->fs) {
-            note_error(o, std::string("SDL_CreateGPUShader: ") + SDL_GetError());
+            note_error(o, why);
             o->gpu_failed = true;
             return false;
         }
@@ -495,7 +498,7 @@ void destroy(Overlay* o) {
 Stats stats(const Overlay* o) {
     if (!o) return {};
     Stats s = o->st;
-    s.gpu = o->dev && !o->gpu_failed && (SDL_GetGPUShaderFormats(o->dev) & SDL_GPU_SHADERFORMAT_SPIRV);
+    s.gpu = o->dev && !o->gpu_failed && sa2_gpu::takes_spirv(o->dev);
     return s;
 }
 

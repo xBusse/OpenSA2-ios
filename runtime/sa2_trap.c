@@ -5,7 +5,10 @@
  * it lacks. x86-64 Windows has one, at the end of this file: a vectored
  * exception handler in place of the signal handlers, a watchdog thread in place
  * of SIGALRM, and its own register save and restore in place of sigsetjmp
- * (sa2_win32.h). */
+ * (sa2_win32.h). Darwin on arm64 (the iOS app, host/ios) shares the POSIX
+ * backend: its signals and sigsetjmp are the same, and only the signal
+ * context's layout, the binary's own bounds and the thread's id and name are
+ * read another way (below, "Darwin"). */
 #if defined(_WIN32)
 #if !defined(__x86_64__)
 #error "sa2_trap.c: the Windows trap backend is for x86-64 only"
@@ -13,6 +16,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <malloc.h>     /* _resetstkoflw */
+#elif defined(__APPLE__) && defined(__aarch64__)
+/* Darwin arm64: the POSIX backend, with the Darwin pieces below. */
 #elif !defined(__linux__) || !(defined(__x86_64__) || defined(__aarch64__))
 #error "sa2_trap.c is the Linux backend for x86-64 and aarch64; this host has no trap backend"
 #endif
@@ -23,7 +28,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if !defined(_WIN32)
+#if defined(__APPLE__)
+#include <mach-o/getsect.h>
+#include <mach-o/ldsyms.h>
+#include <pthread.h>
+#include <sys/ucontext.h>
+#elif !defined(_WIN32)
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <ucontext.h>
@@ -97,8 +107,55 @@ static uintptr_t uc_sp(const void *uc) { return (uintptr_t)((const ucontext_t *)
 #define SA2_PC_NAME " pc 0x"
 static uintptr_t uc_pc(const void *uc) { return (uintptr_t)((const ucontext_t *)uc)->uc_mcontext.pc; }
 static uintptr_t uc_sp(const void *uc) { return (uintptr_t)((const ucontext_t *)uc)->uc_mcontext.sp; }
+#elif defined(__APPLE__) && defined(__aarch64__)
+/* Darwin: uc_mcontext is a pointer to the thread state, and the registers are
+ * read through the arm_thread_state64 accessors, which strip a pointer
+ * authentication code where the ABI signs them (arm64e) and read the field
+ * as it is elsewhere. */
+#define SA2_PC_NAME " pc 0x"
+static uintptr_t uc_pc(const void *uc) {
+    return (uintptr_t)__darwin_arm_thread_state64_get_pc(((const ucontext_t *)uc)->uc_mcontext->__ss);
+}
+static uintptr_t uc_sp(const void *uc) {
+    return (uintptr_t)__darwin_arm_thread_state64_get_sp(((const ucontext_t *)uc)->uc_mcontext->__ss);
+}
+static uintptr_t uc_lr(const void *uc) {
+    return (uintptr_t)__darwin_arm_thread_state64_get_lr(((const ucontext_t *)uc)->uc_mcontext->__ss);
+}
 #else
 #error "sa2_trap.c: no signal-context accessors for this host"
+#endif
+
+/* The binary's own load address and the end of its code, the host thread's id and its name, for
+ * the fault report outside a call: an ELF's __ehdr_start and etext, gettid and PR_GET_NAME on
+ * Linux; on Darwin the main executable's Mach-O header (the app links the game into itself,
+ * host/ios), the end of its __TEXT,__text section, pthread_threadid_np and pthread_getname_np. */
+#if defined(__APPLE__)
+static uintptr_t image_start(void) { return (uintptr_t)&_mh_execute_header; }
+static uintptr_t image_text_end(void) {
+    unsigned long size = 0;
+    const uint8_t *text = getsectiondata(&_mh_execute_header, "__TEXT", "__text", &size);
+    return text ? (uintptr_t)text + size : image_start();
+}
+static uint64_t host_thread_id(void) {
+    uint64_t id = 0;
+    pthread_threadid_np(NULL, &id);
+    return id;
+}
+static int host_thread_name(char *buf, size_t n) { return pthread_getname_np(pthread_self(), buf, n) == 0; }
+#else
+static uintptr_t image_start(void) {
+    extern char __ehdr_start;
+    return (uintptr_t)&__ehdr_start;
+}
+static uintptr_t image_text_end(void) {
+    extern char etext;
+    return (uintptr_t)&etext;
+}
+static uint64_t host_thread_id(void) { return (uint64_t)syscall(SYS_gettid); }
+static int host_thread_name(char *buf, size_t n) {
+    return n >= 16 && prctl(PR_GET_NAME, buf, 0, 0, 0) == 0;
+}
 #endif
 #endif /* !_WIN32 */
 
@@ -152,21 +209,24 @@ static void on_fault(int sig, siginfo_t *si, void *uc) {
         const char lr[] = " lr 0x";
         memcpy(msg + n, lr, sizeof lr - 1);
         n += sizeof lr - 1;
+#if defined(__APPLE__)
+        v = uc_lr(uc);
+#else
         v = (uintptr_t)((ucontext_t *)uc)->uc_mcontext.regs[30];
+#endif
         for (int sh = (int)sizeof v * 8 - 4; sh >= 0; sh -= 4)
             msg[n++] = "0123456789abcdef"[(v >> sh) & 15u];
 #endif
         const char base[] = " image 0x";
         memcpy(msg + n, base, sizeof base - 1);
         n += sizeof base - 1;
-        extern char __ehdr_start;       /* the binary's own load address */
-        v = (uintptr_t)&__ehdr_start;
+        v = image_start();              /* the binary's own load address */
         for (int sh = (int)sizeof v * 8 - 4; sh >= 0; sh -= 4)
             msg[n++] = "0123456789abcdef"[(v >> sh) & 15u];
         const char tid[] = " thread ";
         memcpy(msg + n, tid, sizeof tid - 1);
         n += sizeof tid - 1;
-        long t = (long)syscall(SYS_gettid);
+        long t = (long)host_thread_id();
         char d[24];
         int k = 0;
         do { d[k++] = (char)('0' + t % 10); t /= 10; } while (t && k < 20);
@@ -174,7 +234,7 @@ static void on_fault(int sig, siginfo_t *si, void *uc) {
         /* And its name: the runtime's own threads are named (the stall watch is "sa2-stall"), and a
          * guest thread carries the process's. */
         char comm[17] = {0};
-        if (prctl(PR_GET_NAME, comm, 0, 0, 0) == 0 && comm[0]) {
+        if (host_thread_name(comm, sizeof comm) && comm[0]) {
             msg[n++] = ' ';
             msg[n++] = '(';
             for (int c = 0; c < 16 && comm[c]; c++) msg[n++] = comm[c];
@@ -187,7 +247,7 @@ static void on_fault(int sig, siginfo_t *si, void *uc) {
          * which the build has none of. A fault in the report writer's string
          * routine said where it was and not who called it (2026-09-23). The
          * call test keeps out pointers to .rodata, which the same range holds. */
-        extern char etext;
+        const uintptr_t text_end = image_text_end();
         const uintptr_t *sp = (const uintptr_t *)uc_sp(uc);
         n = 0;
         const char callers[] = " callers";
@@ -196,7 +256,7 @@ static void on_fault(int sig, siginfo_t *si, void *uc) {
         g_reporting = 1;
         for (int w = 0, found = 0; w < 96 && found < 6; w++) {
             v = sp[w];
-            if (v < (uintptr_t)&__ehdr_start + 8u || v >= (uintptr_t)&etext) continue;
+            if (v < image_start() + 8u || v >= text_end) continue;
             if (!sa2_trap_host_call_precedes(v))
                 continue;
             msg[n++] = ' ';

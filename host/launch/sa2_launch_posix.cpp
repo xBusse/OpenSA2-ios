@@ -95,10 +95,25 @@ Fd open_fifo_holder(const std::string& path, std::string* error) {
 
 bool make_pipe(Fd& r, Fd& w, std::string* error) {
     int p[2];
+#if defined(__APPLE__)
+    // Darwin has no pipe2: the same pipe, each end close-on-exec right after (the iOS app, which
+    // is the only Darwin host, starts no other program, so nothing can inherit them in between).
+    if (pipe(p) != 0) {
+        if (error) *error = err("pipe");
+        return false;
+    }
+    if (fcntl(p[0], F_SETFD, FD_CLOEXEC) != 0 || fcntl(p[1], F_SETFD, FD_CLOEXEC) != 0) {
+        if (error) *error = err("fcntl FD_CLOEXEC");
+        close(p[0]);
+        close(p[1]);
+        return false;
+    }
+#else
     if (pipe2(p, O_CLOEXEC) != 0) {
         if (error) *error = err("pipe");
         return false;
     }
+#endif
     r = p[0];
     w = p[1];
     widen_pipe(p[1]);
