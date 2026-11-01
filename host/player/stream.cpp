@@ -24,6 +24,9 @@
 extern "C" errno_t __cdecl _get_stream_buffer_pointers(FILE*, char***, char***, int**);
 #else
 #include <poll.h>
+#if defined(__APPLE__)
+#include "sa2_poll_select.h"   // host/: Darwin's waits on the session's pipes, through select()
+#endif
 #endif
 #include <sys/stat.h>
 #include <time.h>
@@ -739,7 +742,11 @@ void Sa2StreamReader::wait_readable() {
     clock_gettime(CLOCK_MONOTONIC, &a);
     bool waited = false;
     for (;;) {
+#if defined(__APPLE__)
+        const int r = sa2_poll_fds(&p, 1, idle_ms_);
+#else
         const int r = poll(&p, 1, idle_ms_);
+#endif
         if (r > 0 || (r < 0 && errno != EINTR)) break;
         if (r == 0) {
             waited = true;
@@ -810,7 +817,11 @@ const char* sa2_cancel_waiting(int fd) {
     return nullptr;
 #else
     pollfd p{fd, POLLIN, 0};
+#if defined(__APPLE__)
+    if (sa2_poll_fds(&p, 1, 0) <= 0) return nullptr;
+#else
     if (::poll(&p, 1, 0) <= 0) return nullptr;
+#endif
     if (p.revents & POLLIN) return "the caller cancelled";
     if (p.revents & POLLHUP) return "the caller's cancellation pipe is closed";
     if (p.revents & (POLLERR | POLLNVAL)) return "the caller's cancellation pipe failed";
@@ -848,7 +859,11 @@ Sa2ReadStatus Sa2StreamReader::service_live() {
 #else
     if (cancel_services_++ % kCancelLookEvery == 0) {
         pollfd wake{cancel_fd_, POLLIN, 0};
+#if defined(__APPLE__)
+        const int rc = sa2_poll_fds(&wake, 1, 0);
+#else
         const int rc = ::poll(&wake, 1, 0);
+#endif
         if (rc < 0) {
             cancel_services_ = 0;              // not looked at: the next service looks again
             if (errno == EINTR) return Sa2ReadStatus::Ready;
@@ -939,7 +954,11 @@ Sa2ReadStatus Sa2StreamReader::raw_live() {
         pollfd p[2]{{video_fd_, POLLIN, 0}, {cancel_fd_, POLLIN, 0}};
         timespec a{}, b{};
         clock_gettime(CLOCK_MONOTONIC, &a);
+#if defined(__APPLE__)
+        const int rc = sa2_poll_fds(p, 2, idle_ms_);
+#else
         const int rc = ::poll(p, 2, idle_ms_);
+#endif
         clock_gettime(CLOCK_MONOTONIC, &b);
         cancel_services_ = 0;                  // the next service looks at the cancellation
         ++idle_waits_;

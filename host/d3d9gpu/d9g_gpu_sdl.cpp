@@ -1033,6 +1033,34 @@ private:
         if (!props.error().empty()) { err_ = props.error(); return nullptr; }
         auto ci = desc.create_info(props.id());
         ci.vertex_shader = program.vertex->shader; ci.fragment_shader = program.pixel->shader;
+        // Metal's vertex layouts (MTLVertexDescriptor) abort the app, not the call, on a layout it
+        // does not take: a stride of 0 at a per-instance rate, a stride or an attribute offset that is
+        // not a multiple of 4. The null stream (d9g_pipeline.cpp, DXVK's dummy binding: pitch 0, per
+        // instance) takes pitch 16 there, the zero FLOAT4 it reads: the semantic-null buffer holds at
+        // least that (draw's filler check), and with one instance a draw every vertex reads its
+        // first 16 bytes, as at pitch 0. Any other such layout refuses this draw by name.
+        SDL_GPUVertexBufferDescription metal_vbs[std::extent_v<decltype(PipelineDesc::vbs)>];
+        if (info_.driver == "metal" && ci.vertex_input_state.num_vertex_buffers) {
+            const uint32_t nv = ci.vertex_input_state.num_vertex_buffers;
+            for (uint32_t i = 0; i < nv && i < std::size(metal_vbs); ++i) {
+                metal_vbs[i] = ci.vertex_input_state.vertex_buffer_descriptions[i];
+                if (metal_vbs[i].slot == kNullStreamSlot && metal_vbs[i].pitch == 0) metal_vbs[i].pitch = 16;
+                if (metal_vbs[i].pitch == 0 || metal_vbs[i].pitch % 4) {
+                    err_ = "Metal takes no vertex stride of " + std::to_string(metal_vbs[i].pitch) + " (slot " +
+                           std::to_string(metal_vbs[i].slot) + "): a nonzero multiple of 4";
+                    return nullptr;
+                }
+            }
+            for (uint32_t i = 0; i < ci.vertex_input_state.num_vertex_attributes; ++i) {
+                const auto& a = ci.vertex_input_state.vertex_attributes[i];
+                if (a.offset % 4) {
+                    err_ = "Metal takes no vertex attribute offset of " + std::to_string(a.offset) + " (location " +
+                           std::to_string(a.location) + "): a multiple of 4";
+                    return nullptr;
+                }
+            }
+            ci.vertex_input_state.vertex_buffer_descriptions = metal_vbs;
+        }
         SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(dev_, &ci);
         if (!pipeline) { err_ = std::string("SDL_CreateGPUGraphicsPipeline: ") + SDL_GetError(); return nullptr; }
         try { bucket.push_back(PipelineEntry{std::vector<uint8_t>(key, key + n), pipeline}); }

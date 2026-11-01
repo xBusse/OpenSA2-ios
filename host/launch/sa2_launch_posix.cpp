@@ -9,6 +9,9 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
+#if defined(__APPLE__)
+#include "sa2_poll_select.h"   // host/: Darwin's waits on the session's pipes, through select()
+#endif
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -152,7 +155,11 @@ bool write_all(Fd fd, const void* buf, size_t n) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN) {
                 struct pollfd q = {int(fd), POLLOUT, 0};
+#if defined(__APPLE__)
+                (void)sa2_poll_fds(&q, 1, 100);
+#else
                 (void)poll(&q, 1, 100);
+#endif
                 continue;
             }
             return false;
@@ -166,7 +173,11 @@ bool write_all(Fd fd, const void* buf, size_t n) {
 int wait_readable(Fd fd, int timeout_ms) {
     struct pollfd q = {int(fd), POLLIN, 0};
     for (;;) {
+#if defined(__APPLE__)
+        int r = sa2_poll_fds(&q, 1, timeout_ms);
+#else
         int r = poll(&q, 1, timeout_ms);
+#endif
         if (r < 0 && errno == EINTR) continue;
         if (r < 0) return -1;
         return r > 0 ? 1 : 0;
