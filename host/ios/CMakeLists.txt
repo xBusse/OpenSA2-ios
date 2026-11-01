@@ -61,6 +61,8 @@ add_executable(SA2Recomp MACOSX_BUNDLE ${NATIVE} ${SWIFT} ${RESOURCES} app/Bridg
 # Xcode's Copy Bundle Resources phase: the asset catalog through actool, the storyboard through ibtool.
 set_target_properties(SA2Recomp PROPERTIES RESOURCE "${RESOURCES}")
 
+# These become the target's HEADER_SEARCH_PATHS in Xcode, for Objective-C++ and for the Swift
+# bridging header alike; setting XCODE_ATTRIBUTE_HEADER_SEARCH_PATHS as well would replace them.
 target_include_directories(SA2Recomp PRIVATE
     native
     "${HOST}/launch"
@@ -130,7 +132,6 @@ set_target_properties(SA2Recomp PROPERTIES
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
     XCODE_ATTRIBUTE_SWIFT_VERSION "5.0"
     XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/app/Bridge.h"
-    XCODE_ATTRIBUTE_HEADER_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/native"
     XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC "YES"
     XCODE_ATTRIBUTE_CLANG_CXX_LANGUAGE_STANDARD "c++17"
     XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
