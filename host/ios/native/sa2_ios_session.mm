@@ -47,6 +47,7 @@
 #include "sa2_ios_console.h"
 #include "sa2_ios_game.h"
 #include "sa2_ios_ingame.h"
+#include "sa2_ios_mem.h"
 #include "sa2_ios_prof.h"
 
 #include "sa2_config.h"
@@ -660,26 +661,35 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
         }
     });
 
-    // The memory, every second, to <session>/mem.tsv (each line flushed): when iOS ends the app for its
-    // memory, often without a report, the file's last lines show the climb to the limit. The report
-    // gets the peak at the end, and the perf line the footprint.
+    // The memory, every second, to <session>/mem.tsv (each line flushed; sa2_ios_mem.h): when iOS ends
+    // the app for its memory, often without a report, the file's last lines show the climb to the
+    // limit and which kind of memory it was. Allocations of kBigBytes or more go to mem-big.txt with
+    // their call stacks. The report gets the peak at the end, and the perf line the footprint.
+    sa2ios::mem_watch_start();
     std::atomic<double> mem_peak{0};
     std::thread mem_thread([&] {
         pthread_setname_np("sa2-mem");
         FILE* f = std::fopen((session + "/mem.tsv").c_str(), "w");
-        if (f) std::fprintf(f, "# seconds\tfootprint_mib\tavailable_mib\tframes\n");
+        FILE* big = std::fopen((session + "/mem-big.txt").c_str(), "w");
+        if (f) std::fprintf(f, "# seconds\tfootprint_mib\tgraphics_mib\tmalloc_mib\tavailable_mib\tframes\n");
         const double t0 = sa2p::monotonic_seconds();
         while (!player_done.load()) {
-            const double fp = footprint_mib(), av = available_mib();
-            if (fp > mem_peak.load()) mem_peak.store(fp);
+            const sa2ios::MemSample m = sa2ios::mem_sample();
+            const double t = sa2p::monotonic_seconds() - t0;
+            if (m.footprint_mib > mem_peak.load()) mem_peak.store(m.footprint_mib);
             if (f) {
-                std::fprintf(f, "%.1f\t%.0f\t%.0f\t%llu\n", sa2p::monotonic_seconds() - t0, fp, av,
-                             (unsigned long long)relay.frames_out());
+                std::fprintf(f, "%.1f\t%.0f\t%.0f\t%.0f\t%.0f\t%llu\n", t, m.footprint_mib, m.graphics_mib,
+                             m.malloc_mib, m.available_mib, (unsigned long long)relay.frames_out());
                 std::fflush(f);
+            }
+            if (big) {
+                for (const std::string& line : sa2ios::mem_big_drain()) std::fprintf(big, "[%.1f s] %s\n", t, line.c_str());
+                std::fflush(big);
             }
             for (int i = 0; i < 10 && !player_done.load(); i++) sa2l::sleep_ms(100);
         }
         if (f) std::fclose(f);
+        if (big) std::fclose(big);
     });
 
     // The watch: the game's end or the player's end request stops the game; the player is then given
