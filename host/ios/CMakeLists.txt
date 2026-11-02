@@ -35,6 +35,9 @@ endif()
 
 set(B "${SA2_IOS_BUILD}")
 set(HOST "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# The checkout's path, mapped to "." in what the compilers write into the app (source file names,
+# debug info), so a published .ipa carries no path of the machine that built it.
+get_filename_component(SA2_REPO "${CMAKE_CURRENT_SOURCE_DIR}/../.." REALPATH)
 
 set(NATIVE
     native/sa2_ios_main.mm
@@ -147,6 +150,8 @@ set_target_properties(SA2Recomp PROPERTIES
     # The game's lifted code is one object far larger than an app's usual code; the linker's
     # warnings about it are not errors.
     XCODE_ATTRIBUTE_OTHER_LDFLAGS "$(inherited) -Wl,-no_warn_duplicate_libraries"
+    XCODE_ATTRIBUTE_OTHER_CFLAGS "$(inherited) -ffile-prefix-map=${SA2_REPO}=."
+    XCODE_ATTRIBUTE_OTHER_SWIFT_FLAGS "$(inherited) -file-prefix-map ${SA2_REPO}=."
     # A debugging session: the runtime catches its own faults (runtime/sa2_trap.c); lldb is told to
     # let them through (host/ios/lldbinit, which the scheme's launch action sources).
     XCODE_GENERATE_SCHEME ON

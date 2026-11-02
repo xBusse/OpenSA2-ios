@@ -413,6 +413,27 @@ class IosBuilder(A.Builder):
             raise Refused(f"CMake wrote no {project} (gen/xcode-configure.log)")
         return {"project": str(project), "game_linked": game is not None}
 
+    @staticmethod
+    def path_leaks(app: Path) -> list[str]:
+        """Each file of `app` that holds this checkout's path or the user's home folder, with the
+        first such string."""
+        needles = sorted({str(ROOT), os.path.expanduser("~")}, key=len, reverse=True)
+        needles = [n.encode() for n in needles if len(n) > 1]
+        found = []
+        for f in sorted(app.rglob("*")):
+            if not f.is_file() or f.is_symlink():
+                continue
+            data = f.read_bytes()
+            for n in needles:
+                at = data.find(n)
+                if at >= 0:
+                    end = at
+                    while end < len(data) and end - at < 160 and 32 <= data[end] < 127:
+                        end += 1
+                    found.append(f"{f.relative_to(app)}: {data[at:end].decode(errors='replace')}")
+                    break
+        return found
+
     def ipa(self) -> dict:
         project = self.xcode_dir() / "SA2Recomp.xcodeproj"
         derived = self.out / "derived"
@@ -425,6 +446,15 @@ class IosBuilder(A.Builder):
                        *derived.glob("Build/Products/Release-iphoneos/*.app")])
         if not apps:
             raise Refused("xcodebuild made no .app (gen/xcodebuild.log)")
+        # The debug map (the linker's N_OSO entries: every object file's path on this machine) goes,
+        # for dsymutil has read it already: the dSYM beside the app keeps the debug info, and the
+        # app keeps its symbols. Then no path of this checkout or this user may be left in the app.
+        exe = apps[0] / apps[0].stem
+        self.sh(["xcrun", "strip", "-S", exe])
+        leaks = self.path_leaks(apps[0])
+        if leaks:
+            raise Refused("the app still holds paths of this machine: " + "; ".join(leaks[:8]) +
+                          " (host/ios/CMakeLists.txt maps the checkout to '.' for the compilers)")
         out = self.out / "SA2Recomp.ipa"
         tmp = out.with_suffix(".ipa.tmp")
         with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as z:
