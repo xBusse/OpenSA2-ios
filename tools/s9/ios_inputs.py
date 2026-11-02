@@ -276,19 +276,45 @@ def prune(*dirs: Path) -> None:
                 f.unlink()
 
 
+def need_all(log: Path, key: str, step: str) -> None:
+    """Refuse unless every row of a lift_all/compile_all log has `key` set: a row that does not is a
+    lift or compile that failed (a sandbox that would not start, a missing tool), which would
+    otherwise flow on as an empty game."""
+    rows = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+    bad = [r for r in rows if not r.get(key)]
+    if not rows or bad:
+        head = (bad[0].get("error_head") or bad[0].get("error") or "") if bad else ""
+        raise Refused(f"{step}: {len(bad)} of {len(rows)} rows of {log.relative_to(ROOT)} are not {key} "
+                      f"(the first: {str(head)[:200]}); rerun with --force {step} once that is fixed")
+
+
+def userns_ok() -> None:
+    """The lifters run Remill under `unshare -Urm` (a user namespace with a bind mount). Ubuntu 23.10+
+    turns unprivileged user namespaces off through AppArmor; GitHub's ubuntu-24.04 runners do."""
+    r = subprocess.run(["unshare", "-Urm", "--propagation", "unchanged", "true"], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise Refused("unprivileged user namespaces are off (`unshare -Urm true`: "
+                      f"{(r.stderr or '').strip()[:160]}); turn them on with "
+                      "`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` "
+                      "(Ubuntu 23.10 and later) or `sudo sysctl -w kernel.unprivileged_userns_clone=1`")
+
+
 def step_lift(a) -> None:
     log = GEN / "s3" / "whole_image" / "lift" / "next.jsonl"
-    if log.is_file() and not a.forcing("lift"):
-        return
-    sh(f".venv/bin/python tools/s3/whole_image/lift_all.py --jobs {a.jobs} --tag next --to-next-entry",
-       logs() / "lift.log")
+    if not (log.is_file() and not a.forcing("lift")):
+        userns_ok()
+        sh(f".venv/bin/python tools/s3/whole_image/lift_all.py --jobs {a.jobs} --tag next --to-next-entry",
+           logs() / "lift.log")
+    need_all(log, "lifted", "lift")
 
 
 def step_compile(a) -> None:
     log = GEN / "s3" / "whole_image" / "build" / "next.jsonl"
     if log.is_file() and not a.forcing("compile"):
+        need_all(log, "compiled", "compile")
         return
     sh(f".venv/bin/python tools/s3/whole_image/compile_all.py --jobs {a.jobs} --tag next", logs() / "compile.log")
+    need_all(log, "compiled", "compile")
     if a.prune:
         prune(GEN / "s3" / "whole_image" / "lift" / "next")
 
