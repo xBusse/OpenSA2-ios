@@ -2,7 +2,7 @@
 
 The iOS port runs the same recompiled game, runtime, renderer and touch controls as the Android app, in one iOS app you build on a Mac and install on your own device. It needs your own copy of the 2012 PC release of *Sonic Adventure 2*, exactly as the other platforms do. The app holds no game file: you copy your game folder onto the device, and the app verifies it before it plays.
 
-**Status: experimental, running on a device.** The port has been built on a Mac and played on a recent iPhone (an A20 Pro, iOS 27.2): the title, a full Hero story stage and Chao World at a steady 60 frames a second at the screen's own resolution, using about 1–1.4 GB of memory, with no draw or shader failure. Other devices, controllers and iPad have not been tried yet. Read [current limitations](status.md) for the game itself, and [What is not verified](#what-is-not-verified) below for the port.
+**Status: experimental, running on a device.** The port has been built on a Mac and played on a recent iPhone (an A20 Pro, iOS 27.2): the title, a full Hero story stage and Chao World at a steady 60 frames a second at the screen's own resolution, using about 1–1.4 GB of memory, with no draw or shader failure. A Bluetooth controller works too. Other devices and iPad have not been tried yet. Read [current limitations](status.md) for the game itself, and [What is not verified](#what-is-not-verified) below for the port.
 
 ## How it differs from Android
 
@@ -136,6 +136,6 @@ Still not verified:
 
 - **Other devices.** Only one recent iPhone (an A20 Pro) has run the game. The app's footprint is about 1–1.4 GB, well inside a recent iPhone's limit; older devices with less memory are untried. `-DSA2_IOS_INCREASED_MEMORY=ON` (a paid team's entitlement) raises the limit where iOS allows.
 - **Every shader through SPIRV-Cross.** Every shader of a story stage and Chao World converted and drew; the rest of the game's stages have not been played.
-- **Controllers, the touch layout editor, iPad, saves import and export, the installer's ZIP route** on a device, and folders chosen outside the app's own.
+- **The touch layout editor, iPad, saves import and export, the installer's ZIP route** on a device, and folders chosen outside the app's own. (A Bluetooth controller has been played with.)
 
 Report what you find with a session's ZIP (Debug › Session folders › Share), keeping game data out of public issues as [CONTRIBUTING.md](../CONTRIBUTING.md) asks.
