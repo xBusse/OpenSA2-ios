@@ -3,7 +3,8 @@
 # (tools/s9/ios_mac.sh). docs/ios.md ("Build it in the cloud") says how to set it up.
 #
 # This file goes in a PRIVATE repository of yours, as .github/workflows/ios-build.yml, next to a
-# release tagged `game` that holds your Steam copy's sonic2app.exe as an asset. It is not a workflow
+# release tagged `game` that holds your Steam copy's sonic2app.exe as an asset (or with the file
+# committed as game/sonic2app.exe). It is not a workflow
 # of the source repository: the executable and the translated game must stay private, and every
 # artifact below lives only in the private repository (the intermediate ones for a day). The .ipa
 # it makes is what you publish, as upstream publishes its Windows, Android and Linux builds.
@@ -34,11 +35,23 @@ jobs:
     name: Unpack the executable (Windows, Steamless)
     runs-on: windows-latest
     steps:
-      - name: Your sonic2app.exe (this repository's release "game")
+      - uses: actions/checkout@v4
+        with:
+          path: self
+      - name: Your sonic2app.exe (this repository's release "game", or its file game/sonic2app.exe)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download game --repo "$GITHUB_REPOSITORY" --pattern sonic2app.exe --dir exe
+        run: |
+          mkdir -p exe
+          if gh release download game --repo "$GITHUB_REPOSITORY" --pattern sonic2app.exe --dir exe 2>/dev/null; then
+            echo "from the release game"
+          elif [ -f self/game/sonic2app.exe ]; then
+            cp self/game/sonic2app.exe exe/ && echo "from game/sonic2app.exe"
+          else
+            echo "::error::no sonic2app.exe: add it to a release tagged game, or commit it as game/sonic2app.exe"; exit 1
+          fi
+          sha256sum exe/sonic2app.exe
       - name: Steamless 3.1.0.5
         shell: bash
         run: |
