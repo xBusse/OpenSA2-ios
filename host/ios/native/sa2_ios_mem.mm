@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <mach/mach.h>
+#include <mach/vm_statistics.h>
 #include <malloc/malloc.h>
 #include <os/proc.h>
 
@@ -11,6 +12,8 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
+#include <map>
 
 namespace sa2ios {
 namespace {
@@ -112,6 +115,83 @@ std::vector<std::string> mem_big_drain() {
     g_read.store(upto);
     if (const uint64_t lost = g_dropped.exchange(0))
         out.push_back(std::to_string(lost) + " more not kept (the ring was full)");
+    return out;
+}
+
+namespace {
+const char* tag_name(unsigned tag) {
+    switch (tag) {
+        case 0: return "untagged (mmap)";
+        case VM_MEMORY_MALLOC: return "malloc";
+        case VM_MEMORY_MALLOC_SMALL: return "malloc small";
+        case VM_MEMORY_MALLOC_LARGE: return "malloc large";
+        case VM_MEMORY_MALLOC_HUGE: return "malloc huge";
+        case VM_MEMORY_MALLOC_TINY: return "malloc tiny";
+        case VM_MEMORY_MALLOC_LARGE_REUSABLE: return "malloc large reusable";
+        case VM_MEMORY_MALLOC_LARGE_REUSED: return "malloc large reused";
+        case VM_MEMORY_MALLOC_NANO: return "malloc nano";
+        case VM_MEMORY_STACK: return "stack";
+        case VM_MEMORY_IOKIT: return "IOKit";
+        case VM_MEMORY_IOACCELERATOR: return "IOAccelerator (Metal)";
+        case VM_MEMORY_IOSURFACE: return "IOSurface";
+        case VM_MEMORY_DYLD: return "dyld";
+        case VM_MEMORY_COREGRAPHICS: return "CoreGraphics";
+        case VM_MEMORY_CORESERVICES: return "CoreServices";
+        case VM_MEMORY_FOUNDATION: return "Foundation";
+        case VM_MEMORY_LIBDISPATCH: return "libdispatch";
+        case VM_MEMORY_ACCELERATE: return "Accelerate";
+        case VM_MEMORY_SHARED_PMAP: return "shared pmap";
+        default: return nullptr;
+    }
+}
+}  // namespace
+
+std::string mem_regions() {
+    struct Sum { uint64_t bytes = 0, regions = 0; };
+    struct Region { uint64_t at, size, bytes; unsigned tag; };
+    std::map<unsigned, Sum> by_tag;
+    std::vector<Region> regions;
+    vm_size_t page = 0;
+    host_page_size(mach_host_self(), &page);
+    vm_address_t addr = 0;
+    natural_t depth = 0;
+    for (int guard = 0; guard < 200000; guard++) {
+        vm_size_t size = 0;
+        vm_region_submap_info_data_64_t info{};
+        mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+        if (vm_region_recurse_64(mach_task_self(), &addr, &size, &depth,
+                                   reinterpret_cast<vm_region_recurse_info_64_t>(&info), &count) != KERN_SUCCESS)
+            break;
+        if (info.is_submap) { depth++; continue; }
+        const uint64_t bytes = (uint64_t(info.pages_dirtied) + uint64_t(info.pages_swapped_out)) * uint64_t(page);
+        if (bytes) {
+            Sum& s = by_tag[info.user_tag];
+            s.bytes += bytes;
+            s.regions++;
+            regions.push_back({uint64_t(addr), uint64_t(size), bytes, info.user_tag});
+        }
+        addr += size;
+    }
+    std::vector<std::pair<unsigned, Sum>> tags(by_tag.begin(), by_tag.end());
+    std::sort(tags.begin(), tags.end(), [](auto& a, auto& b) { return a.second.bytes > b.second.bytes; });
+    std::sort(regions.begin(), regions.end(), [](auto& a, auto& b) { return a.bytes > b.bytes; });
+    std::string out = "  by kind (dirty and swapped-out bytes):\n";
+    char line[256];
+    for (size_t i = 0; i < tags.size() && i < 12; i++) {
+        const char* n = tag_name(tags[i].first);
+        std::snprintf(line, sizeof line, "    %9.1f MiB  %-24s (tag %u) in %llu regions\n",
+                      double(tags[i].second.bytes) / 1048576.0, n ? n : "other", tags[i].first,
+                      (unsigned long long)tags[i].second.regions);
+        out += line;
+    }
+    out += "  largest regions:\n";
+    for (size_t i = 0; i < regions.size() && i < 10; i++) {
+        const char* n = tag_name(regions[i].tag);
+        std::snprintf(line, sizeof line, "    %9.1f MiB of %9.1f MiB at 0x%llx  %s (tag %u)\n",
+                      double(regions[i].bytes) / 1048576.0, double(regions[i].size) / 1048576.0,
+                      (unsigned long long)regions[i].at, n ? n : "other", regions[i].tag);
+        out += line;
+    }
     return out;
 }
 

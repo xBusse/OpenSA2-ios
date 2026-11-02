@@ -29,5 +29,9 @@ struct MemSample {
 MemSample mem_sample();
 void mem_watch_start();
 std::vector<std::string> mem_big_drain();
+// Every VM region of the app, its dirty and swapped-out pages summed by the region's tag (malloc's
+// kinds, stacks, Metal's IOAccelerator, mapped files, untagged mmap...), with the largest regions:
+// what the footprint is made of. A few milliseconds; the session runs it when the footprint jumps.
+std::string mem_regions();
 
 }  // namespace sa2ios

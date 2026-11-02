@@ -677,6 +677,13 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
             const sa2ios::MemSample m = sa2ios::mem_sample();
             const double t = sa2p::monotonic_seconds() - t0;
             if (m.footprint_mib > mem_peak.load()) mem_peak.store(m.footprint_mib);
+            // A jump of 256 MiB or more since the last second, and the first sample: what it is made of.
+            static double last_dump = -1e9;
+            if (big && (last_dump < -1e8 || m.footprint_mib - last_dump >= 256)) {
+                std::fprintf(big, "[%.1f s] footprint %.0f MiB (graphics %.0f, malloc %.0f):\n%s\n", t,
+                             m.footprint_mib, m.graphics_mib, m.malloc_mib, sa2ios::mem_regions().c_str());
+                last_dump = m.footprint_mib;
+            }
             if (f) {
                 std::fprintf(f, "%.1f\t%.0f\t%.0f\t%.0f\t%.0f\t%llu\n", t, m.footprint_mib, m.graphics_mib,
                              m.malloc_mib, m.available_mib, (unsigned long long)relay.frames_out());
