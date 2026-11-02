@@ -3,7 +3,8 @@
  * Compiled into the game's prelinked object (tools/s9/ios_game.py) *without* the exit, _exit and
  * atexit renames the game's own sources get, so the real ones are reachable here. */
 #include "sa2_ios_game.h"
-#include "sa2_ios_console.h"   /* sa2ios_console_drain: the app's, resolved when the app links the game */
+#include "sa2_ios_console.h"
+#include "sa2_tweaks.h"         /* sa2_tweaks_read_env: the runtime's */   /* sa2ios_console_drain: the app's, resolved when the app links the game */
 
 #include <errno.h>
 #include <fcntl.h>
@@ -116,6 +117,9 @@ __attribute__((noreturn)) void sa2_ios_game__exit(int code) {
 static void *game_body(void *arg) {
     (void)arg;
     pthread_setname_np("sa2-game");
+    /* The runtime read SA2_TWEAKS at the app's start (a constructor), before the session set it:
+     * read now, as a game process reads it at its own start. */
+    sa2_tweaks_read_env();
     const int code = sa2_game_main(g_argc, g_argv);
     fflush(NULL);
     run_atexits();

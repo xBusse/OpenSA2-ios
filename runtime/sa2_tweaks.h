@@ -298,6 +298,12 @@ typedef struct {
  * sa2_tweaks.c's weak definition, which names none. */
 const sa2_tweak_patch *sa2_tweak_patches_linked(unsigned *count);
 
+/* SA2_TWEAKS read again, and the report line said again. The process's start reads it (a
+ * constructor), which is the game's start everywhere but the iOS app: there the game is a thread the
+ * app starts after its own start, once the session has put SA2_TWEAKS in the environment, so the
+ * game's thread (host/ios/native/sa2_ios_game.c) calls this before the game's main. */
+void sa2_tweaks_read_env(void);
+
 /* Whether row `row` of sa2_tweak_patches_linked is on in this run: the generated wraps ask it. */
 int sa2_tweak_patch_on(unsigned row);
 
