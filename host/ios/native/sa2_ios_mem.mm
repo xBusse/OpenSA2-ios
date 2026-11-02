@@ -151,6 +151,7 @@ std::string mem_regions() {
     struct Region { uint64_t at, size, bytes; unsigned tag; };
     std::map<unsigned, Sum> by_tag;
     std::vector<Region> regions;
+    std::map<uint64_t, uint64_t> metal_sizes;   // IOAccelerator regions by size (MiB, rounded)
     vm_size_t page = 0;
     host_page_size(mach_host_self(), &page);
     vm_address_t addr = 0;
@@ -164,6 +165,7 @@ std::string mem_regions() {
             break;
         if (info.is_submap) { depth++; continue; }
         const uint64_t bytes = (uint64_t(info.pages_dirtied) + uint64_t(info.pages_swapped_out)) * uint64_t(page);
+        if (bytes && info.user_tag == VM_MEMORY_IOACCELERATOR) metal_sizes[(uint64_t(size) + 524288) >> 20]++;
         if (bytes) {
             Sum& s = by_tag[info.user_tag];
             s.bytes += bytes;
@@ -183,6 +185,14 @@ std::string mem_regions() {
                       double(tags[i].second.bytes) / 1048576.0, n ? n : "other", tags[i].first,
                       (unsigned long long)tags[i].second.regions);
         out += line;
+    }
+    if (!metal_sizes.empty()) {
+        out += "  IOAccelerator (Metal) regions by size:";
+        for (auto it = metal_sizes.rbegin(); it != metal_sizes.rend(); ++it) {
+            std::snprintf(line, sizeof line, " %llux%llu MiB", (unsigned long long)it->second, (unsigned long long)it->first);
+            out += line;
+        }
+        out += "\n";
     }
     out += "  largest regions:\n";
     for (size_t i = 0; i < regions.size() && i < 10; i++) {

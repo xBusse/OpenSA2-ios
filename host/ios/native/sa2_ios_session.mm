@@ -661,7 +661,7 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
         }
     });
 
-    // The memory, every second, to <session>/mem.tsv (each line flushed; sa2_ios_mem.h): when iOS ends
+    // The memory, five times a second, to <session>/mem.tsv (each line flushed; sa2_ios_mem.h): when iOS ends
     // the app for its memory, often without a report, the file's last lines show the climb to the
     // limit and which kind of memory it was. Allocations of kBigBytes or more go to mem-big.txt with
     // their call stacks. The report gets the peak at the end, and the perf line the footprint.
@@ -693,7 +693,7 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
                 for (const std::string& line : sa2ios::mem_big_drain()) std::fprintf(big, "[%.1f s] %s\n", t, line.c_str());
                 std::fflush(big);
             }
-            for (int i = 0; i < 10 && !player_done.load(); i++) sa2l::sleep_ms(100);
+            sa2l::sleep_ms(200);   // five times a second: a jump that ends the app is seen on its way
         }
         if (f) std::fclose(f);
         if (big) std::fclose(big);

@@ -36,6 +36,11 @@ namespace d9g {
 namespace {
 
 constexpr uint32_t kRing = 64u << 20;
+// On Metal the ring is kMetalRings buffers the backend picks between itself (stage): SDL's Metal
+// backend marks a buffer idle only when a later submit cleans the command buffer that read it, not
+// when its fence is waited, so a ring mapped with SDL's cycle flag kept getting a new 64 MiB buffer
+// that SDL never gave back, and the app's footprint grew by gigabytes until iOS ended it.
+constexpr uint32_t kMetalRings = 4;
 
 SDL_GPUTextureFormat sdl_format(GFmt f) {
     switch (f) {
@@ -110,6 +115,10 @@ public:
                 info_.bc_unsupported += std::string(info_.bc_unsupported.empty() ? "" : ", ") + gfmt_name(f);
         SDL_GPUTransferBufferCreateInfo ri{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, kRing, 0};
         ring_ = SDL_CreateGPUTransferBuffer(dev, &ri);
+        if (info_.driver == "metal" && ring_) {
+            rings_[0] = ring_;
+            for (uint32_t i = 1; i < kMetalRings; ++i) rings_[i] = SDL_CreateGPUTransferBuffer(dev, &ri);
+        }
     }
 
     ~SdlGpu() override {
@@ -122,7 +131,12 @@ public:
                 for (const PipelineEntry& e : bucket) SDL_ReleaseGPUGraphicsPipeline(dev_, e.pipeline);
         for (auto& [key, sampler] : samplers_) SDL_ReleaseGPUSampler(dev_, sampler);
         for (auto& [key, object] : shaders_) SDL_ReleaseGPUShader(dev_, object->shader);
-        if (ring_) SDL_ReleaseGPUTransferBuffer(dev_, ring_);
+        if (rings_[0]) {
+            for (SDL_GPUTransferBuffer* r : rings_)
+                if (r) SDL_ReleaseGPUTransferBuffer(dev_, r);
+        } else if (ring_) {
+            SDL_ReleaseGPUTransferBuffer(dev_, ring_);
+        }
         if (down_) SDL_ReleaseGPUTransferBuffer(dev_, down_);
         if (surface_gone_) {
             // SDL_ReleaseWindowFromGPUDevice, and SDL_DestroyGPUDevice through it, would destroy the
@@ -1423,8 +1437,29 @@ private:
             if (!encode_call("SDL_UnmapGPUTransferBuffer(ring)", [&] { SDL_UnmapGPUTransferBuffer(dev_, ring_); })) return false;
         }
         if (!ring_map_) {
+            // Metal: a ring buffer no submit still to complete has read, mapped without SDL's cycle;
+            // when every one is still read, the oldest submit is waited for; when all of them are this
+            // command buffer's, SDL's cycle as elsewhere.
+            bool cycle = true;
+            if (rings_[0]) {
+                const uint64_t now = c_.submits + 1;   // the submit this command buffer will be
+                for (int attempt = 0; attempt < 2 && cycle; ++attempt) {
+                    for (uint32_t k = 1; k <= kMetalRings; ++k) {
+                        const uint32_t i = (ring_at_ + k) % kMetalRings;
+                        if (rings_[i] && ring_use_[i] <= done_) {
+                            ring_at_ = i;
+                            ring_ = rings_[i];
+                            ring_use_[i] = now;
+                            cycle = false;
+                            break;
+                        }
+                    }
+                    if (cycle && attempt == 0 && !wait_oldest()) return false;
+                }
+                if (cycle) ring_use_[ring_at_] = now;
+            }
             if (!encode_call("SDL_MapGPUTransferBuffer(ring)", [&] {
-                    ring_map_ = static_cast<uint8_t*>(SDL_MapGPUTransferBuffer(dev_, ring_, true));
+                    ring_map_ = static_cast<uint8_t*>(SDL_MapGPUTransferBuffer(dev_, ring_, cycle));
                 })) return false;
             if (!ring_map_) { err_ = std::string("SDL_MapGPUTransferBuffer: ") + SDL_GetError(); return false; }
             ring_off_ = 0;
@@ -1442,6 +1477,20 @@ private:
     void release_pending_fences() {
         for (uint32_t i = 0; i < pending_count_; ++i) SDL_ReleaseGPUFence(dev_, pending_[i]);
         pending_count_ = 0;
+    }
+    // The oldest submit still pending, waited for: done_ moves to it. True with nothing pending.
+    bool wait_oldest() {
+        if (!pending_count_) return true;
+        SDL_ClearError();
+        const bool ready = SDL_WaitForGPUFences(dev_, true, pending_.data(), 1);
+        c_.waits++;
+        if (!check_encoding_error("SDL_WaitForGPUFences(ring)")) return false;
+        if (!ready) { err_ = "SDL_WaitForGPUFences(ring) failed"; discard_failed_commands(); return false; }
+        done_ = std::max<uint64_t>(done_, c_.submits - pending_count_ + 1);
+        SDL_ReleaseGPUFence(dev_, pending_[0]);
+        for (uint32_t i = 1; i < pending_count_; ++i) pending_[i - 1] = pending_[i];
+        --pending_count_;
+        return true;
     }
     bool submit(bool wait) {
         if (!end_render() || !end_copy()) return false;
@@ -1463,6 +1512,7 @@ private:
                 discard_failed_commands();
                 return false;
             }
+            done_ = std::max<uint64_t>(done_, c_.submits - pending_count_ + 1);
             SDL_ReleaseGPUFence(dev_, pending_[0]);
             pending_[0] = pending_[1];
             --pending_count_;
@@ -1482,7 +1532,10 @@ private:
         const bool ok = SDL_WaitForGPUFences(dev_, true, &f, 1);
         const bool no_error = check_encoding_error("SDL_WaitForGPUFences");
         // All earlier submissions on SDL's graphics queue completed before this fence.
-        if (ok && no_error) release_pending_fences();
+        if (ok && no_error) {
+            release_pending_fences();
+            done_ = c_.submits;
+        }
         c_.waits++;
         if (!ok && no_error) { err_ = "SDL_WaitForGPUFences failed"; discard_failed_commands(); }
         return ok && no_error;
@@ -1541,6 +1594,12 @@ private:
     } bound_;
     std::vector<UpCopy> up_copies_;
     SDL_GPUTransferBuffer* ring_ = nullptr;
+    // Metal's ring (stage): kMetalRings transfer buffers of kRing bytes, each with the submit that
+    // last read it (ring_use_), and the last submit known complete (done_).
+    std::array<SDL_GPUTransferBuffer*, kMetalRings> rings_{};
+    std::array<uint64_t, kMetalRings> ring_use_{};
+    uint32_t ring_at_ = 0;
+    uint64_t done_ = 0;
     SDL_GPUTransferBuffer* dedicated_ = nullptr;
     uint8_t* ring_map_ = nullptr;
     uint32_t ring_off_ = 0;
