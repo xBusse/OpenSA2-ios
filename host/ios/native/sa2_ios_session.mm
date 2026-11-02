@@ -634,10 +634,11 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
     });
 
     // The speed line every 30 s (frames handed on a second), as the Android session's perf line says it.
-    // With the sampler on (the default; SA2_IOS_PROF=0 in game.env.extra turns it off) the 30 s are a
-    // window of sa2_ios_prof.h: where every thread's time went, in <session>/prof.txt, and a line.
+    // With the sampler on (SA2_IOS_PROF=1 in game.env.extra; off by default, since it stops every
+    // thread a hundred times a second) the 30 s are a window of sa2_ios_prof.h: where every thread's
+    // time went, in <session>/prof.txt, and a line.
     const std::string* prof_env = env_find(genv, "SA2_IOS_PROF");
-    const bool prof_on = !(prof_env && *prof_env == "0");
+    const bool prof_on = prof_env && *prof_env == "1";
     std::thread perf_thread([&] {
         pthread_setname_np("sa2-perf");
         uint64_t last = 0;
@@ -661,16 +662,20 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
         }
     });
 
-    // The memory, five times a second, to <session>/mem.tsv (each line flushed; sa2_ios_mem.h): when iOS ends
+    // The memory, every second, to <session>/mem.tsv (each line flushed; sa2_ios_mem.h): when iOS ends
     // the app for its memory, often without a report, the file's last lines show the climb to the
-    // limit and which kind of memory it was. Allocations of kBigBytes or more go to mem-big.txt with
-    // their call stacks. The report gets the peak at the end, and the perf line the footprint.
-    sa2ios::mem_watch_start();
+    // limit and which kind of memory it was. The report gets the peak at the end, and the perf line
+    // the footprint. SA2_IOS_MEMWATCH=1 (game.env.extra) samples five times a second and adds
+    // mem-big.txt: every allocation of kBigBytes or more with its call stack (libmalloc's hook, on
+    // every allocation of the app), and at each jump of the footprint what it is made of.
+    const std::string* memwatch_env = env_find(genv, "SA2_IOS_MEMWATCH");
+    const bool memwatch = memwatch_env && *memwatch_env == "1";
+    if (memwatch) sa2ios::mem_watch_start();
     std::atomic<double> mem_peak{0};
     std::thread mem_thread([&] {
         pthread_setname_np("sa2-mem");
         FILE* f = std::fopen((session + "/mem.tsv").c_str(), "w");
-        FILE* big = std::fopen((session + "/mem-big.txt").c_str(), "w");
+        FILE* big = memwatch ? std::fopen((session + "/mem-big.txt").c_str(), "w") : nullptr;
         if (f) std::fprintf(f, "# seconds\tfootprint_mib\tgraphics_mib\tmalloc_mib\tavailable_mib\tframes\n");
         const double t0 = sa2p::monotonic_seconds();
         while (!player_done.load()) {
@@ -693,7 +698,8 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
                 for (const std::string& line : sa2ios::mem_big_drain()) std::fprintf(big, "[%.1f s] %s\n", t, line.c_str());
                 std::fflush(big);
             }
-            sa2l::sleep_ms(200);   // five times a second: a jump that ends the app is seen on its way
+            // five times a second when watching: a jump that ends the app is seen on its way
+            for (int i = 0; i < (memwatch ? 2 : 10) && !player_done.load(); i++) sa2l::sleep_ms(100);
         }
         if (f) std::fclose(f);
         if (big) std::fclose(big);

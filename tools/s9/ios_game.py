@@ -43,7 +43,12 @@ Subcommands:
 
 Usage (the inputs are the Linux build's: copy the checkout's private/ to the Mac first):
   .venv/bin/python tools/s9/ios_game.py compile --clang /opt/homebrew/opt/llvm@20/bin/clang --jobs 8
-  .venv/bin/python tools/s9/ios_game.py link --llvm /opt/homebrew/opt/llvm@20/bin
+  .venv/bin/python tools/s9/ios_game.py link --llvm /opt/homebrew/opt/llvm@20/bin \
+      [--variants private/generated/s9/ios/variants]
+The code-patch tweaks (tools/s8/variants) are built for the compiled objects, on either machine, and
+handed to the link:
+  .venv/bin/python tools/s8/variants/variants.py build --objects private/generated/s9/ios/objects-double \
+      --out private/generated/s9/ios/variants
 Outputs live under private/generated/s9/ios/ (never tracked: the library is the lifted game).
 """
 from __future__ import annotations
@@ -80,6 +85,10 @@ GEN = ROOT / "private" / "generated"
 S9 = GEN / "s9" / "ios"
 OUT = S9 / "game"
 WORK = S9 / "work"
+# The f80 pass each mode's modules were legalised by (cross_build, via _worker_init): recorded in the
+# compile's summary as android_game records it, which tools/s8/variants/variants.py reads.
+F80_PASS = {"exact": ROOT / "tools" / "s7" / "f80_legalize.py",
+            "double": ROOT / "tools" / "s8" / "f80_double.py"}
 F80_SHIMS = {"exact": ROOT / "tools" / "s7" / "f80_shims.c",
              "double": ROOT / "tools" / "s8" / "f80_shims_double.c"}
 FP_FLAGS = ("-ffp-contract=off",)
@@ -184,6 +193,7 @@ def compile_image(args: argparse.Namespace) -> int:
     recs = [json.loads(line) for line in log.read_text().splitlines()]
     summary = {
         "schema": "sa2-s9-ios-cross-build/v1", "generated_by": SELF, "target": TRIPLE, "f80_mode": args.f80,
+        "legalized": True, "pass": rel(F80_PASS[args.f80]), "pass_sha256": sha256(F80_PASS[args.f80]),
         "clang": subprocess.run([args.clang, "--version"], capture_output=True, text=True).stdout.splitlines()[0],
         "out": rel(outdir), "jobs": args.jobs, "wall_seconds": round(time.time() - t0, 1),
         "commands": {p: ios_compile_command(p, TRIPLE, Path("{ir}"), Path("{object}")) for p in chosen},
@@ -243,6 +253,23 @@ def link_game(args: argparse.Namespace) -> int:
     out.mkdir(parents=True, exist_ok=True)
     work.mkdir(parents=True, exist_ok=True)
     plan = AG.plan_for("game", src, work)
+    patches = None
+    if args.variants:
+        # Code-patch tweaks (tools/s8/variants/variants.py `build --objects <these objects>`), as
+        # android_game links them: their C after the hooks, their objects after the extras, their
+        # wraps after the plan's.
+        RB = AG.release_modules()
+        patches = RB.load(src, "tools/s8/variants/variants.py", "variants").linked(Path(args.variants), objects)
+        clash = sorted(set(patches["wraps"]) & set(list(L4.PRODUCTION_WRAPS) + list(plan["wraps"])))
+        if clash:
+            raise SystemExit(f"--variants wraps {clash}, which this link already wraps")
+        plan = dict(plan, extra=list(plan["extra"]) + [patches["c"]],
+                    wraps=list(plan["wraps"]) + patches["wraps"])
+    # The code-patch tweaks runtime/sa2_tweaks.h registers that this library does not link: the
+    # settings screen still offers each, and the game names it as one it was built without.
+    unlinked = AG.release_modules().unlinked_patches(src, {"variants": patches["note"]} if patches else {})
+    if unlinked:
+        print(f"code-patch tweaks this library does not link: {', '.join(unlinked)}", file=sys.stderr)
     lifted = AG.lifted_inputs(objects, work / "linkdir")
     sdk = xcrun("--sdk", "iphoneos", "--show-sdk-path")
     sdk_version = xcrun("--sdk", "iphoneos", "--show-sdk-version")
@@ -295,6 +322,7 @@ def link_game(args: argparse.Namespace) -> int:
     # --wrap on Mach-O (the module's header): the references renamed in copies.
     wrapped = list(L4.PRODUCTION_WRAPS) + list(plan["wraps"])
     inputs = ([o for _, _, o in jobs] + [Path(x) for x in lifted["extras"]]
+              + [Path(x) for x in (patches["objects"] if patches else [])]
               + [work / "linkdir" / n for n in lifted["whole"]])
     t1 = time.time()
     wrapdir = work / "wrapped"
@@ -333,6 +361,7 @@ def link_game(args: argparse.Namespace) -> int:
     (out / "game.env").write_text("\n".join(plan["env_lines"]) + "\n")
     rec = {"schema": "sa2-s9-ios-link/v1", "generated_by": SELF, "triple": TRIPLE, "sdk": sdk_version,
            "f80_mode": args.f80, "hooks": plan["hooks"], "wraps": plan["wraps"], "wrapped": wrapped,
+           "variants": patches["note"] if patches else None, "patches_unlinked": unlinked,
            "game_defines": list(GAME_DEFINES), "main": rel(plan["main"]),
            "exe_overlay": ({"table": rel(plan["overlay"]), "sha256": sha256(plan["overlay"])} if plan["overlay"] else None),
            "flags_c": cflags[1:], "flags_cxx": cxxflags[1:], "flags_llvm20": zflags[1:], "compile": log,
@@ -366,6 +395,9 @@ def main(argv: list[str] | None = None) -> int:
     l.add_argument("--out", default=None)
     l.add_argument("--work", default=None)
     l.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) // 2))
+    l.add_argument("--variants", default=None,
+                   help="a directory tools/s8/variants/variants.py built for --objects: its code-patch tweaks "
+                        "are linked in (none: the settings screen's code-patch tweaks do nothing)")
     a = ap.parse_args(argv)
     return compile_image(a) if a.cmd == "compile" else link_game(a)
 

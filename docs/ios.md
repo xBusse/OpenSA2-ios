@@ -2,7 +2,7 @@
 
 The iOS port runs the same recompiled game, runtime, renderer and touch controls as the Android app, in one iOS app you build on a Mac and install on your own device. It needs your own copy of the 2012 PC release of *Sonic Adventure 2*, exactly as the other platforms do. The app holds no game file: you copy your game folder onto the device, and the app verifies it before it plays.
 
-**Status: experimental, in source.** The port's code is complete from the build scripts to the app's screens, and its source-side checks pass (`Documentation/scripts/tests/test_ios.py`), but it has not yet been built and run on a device. Expect the first builds to need fixes. Read [current limitations](status.md) for the game itself, and [What is not verified](#what-is-not-verified) below for the port.
+**Status: experimental, running on a device.** The port has been built on a Mac and played on a recent iPhone (an A20 Pro, iOS 27.2): the title, a full Hero story stage and Chao World at a steady 60 frames a second at the screen's own resolution, using about 1–1.4 GB of memory, with no draw or shader failure. Other devices, controllers and iPad have not been tried yet. Read [current limitations](status.md) for the game itself, and [What is not verified](#what-is-not-verified) below for the port.
 
 ## How it differs from Android
 
@@ -17,8 +17,8 @@ The relay, the pacing, the stream contract, the touch overlay, the settings, the
 ## What you need
 
 - A Linux build machine that can already build the game for Android: the analyzed executable, the translated modules, DXVK's build and the other inputs under `private/` ([the developer guide](getting-started.md)). The iOS build reuses those inputs.
-- A Mac with Xcode 16 or later, and from Homebrew: `cmake`, `ninja` and `llvm@20`. The lifted modules are LLVM 20 IR, which Xcode's own clang cannot read.
-- Python 3 with the checkout's requirements in `.venv` (`python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt`).
+- A Mac with Xcode 16 or later, and from Homebrew: `cmake`, `ninja`, `llvm@20`, `gpatch` (GNU patch, for SDL3's patches; macOS's own `patch` is Apple's), `python@3.13` and, if pip finds no wheel for `iced-x86`, `rust`. The lifted modules are LLVM 20 IR, which Xcode's own clang cannot read.
+- Python 3.10 or later with the checkout's requirements in `.venv`. The `python3` Xcode installs is 3.9, which the requirements' pins refuse, so make the environment with Homebrew's: `/opt/homebrew/bin/python3.13 -m venv .venv && .venv/bin/python -m pip install --upgrade pip && .venv/bin/python -m pip install -r requirements.txt`.
 - An iPhone or iPad on iOS 15 or later. More memory is better: see [What is not verified](#what-is-not-verified). A free Apple account can sign the app for seven days at a time; a sideloading tool such as AltStore or SideStore can install and refresh it. The game is compiled ahead of time, so the app needs no JIT and no special entitlement.
 
 ## Build it
@@ -31,19 +31,32 @@ The relay, the pacing, the stream contract, the touch overlay, the settings, the
    .venv/bin/python tools/s9/ios_game.py compile --clang /usr/lib/llvm-20/bin/clang --jobs 8
    ```
 
-3. Copy the checkout, `private/` included, to the Mac. Keep the same relative layout; absolute paths in DXVK's compile commands are moved onto the new checkout by the build.
+   Build the code-patch tweaks for those objects too (`no-music`, `no-voices`, `spin-dash-fast`, `stage-select-all`, `victory-powerups`). On Linux `nm` must be LLVM's, since GNU nm reads no Mach-O object; on the Mac its own `nm` does:
+
+   ```bash
+   SA2_NM=llvm-nm-20 .venv/bin/python tools/s8/variants/variants.py build \
+       --objects private/generated/s9/ios/objects-double --out private/generated/s9/ios/variants
+   ```
+
+3. Copy the checkout, `private/` included, to the Mac. Keep the same relative layout; absolute paths in DXVK's compile commands are moved onto the new checkout by the build. DXVK's source must arrive as a git checkout at its pinned commit (the shader translator's build reads its commit), so copy its `.git` too, or clone it again on the Mac:
 
    ```bash
    rsync -a --info=progress2 OpenSA2/ mac:OpenSA2/
+   # or, on the Mac, when private/s5-tools/src/dxvk-3.1.1 came without its .git:
+   rm -rf private/s5-tools/src/dxvk-3.1.1
+   git clone --branch v3.1.1 --recurse-submodules https://github.com/doitsujin/dxvk.git private/s5-tools/src/dxvk-3.1.1
    ```
+
+   The libpng tarball the app's dependencies use is under `private/predecessor-tools/win-deps/`; fetch it on the Mac if the Linux machine could not (`curl -fL -o private/predecessor-tools/win-deps/libpng-1.6.59.tar.xz https://download.sourceforge.net/libpng/libpng-1.6.59.tar.xz`).
 
 4. On the Mac, link the game (the runtime is compiled for the iOS SDK here):
 
    ```bash
-   .venv/bin/python tools/s9/ios_game.py link --llvm /opt/homebrew/opt/llvm@20/bin
+   .venv/bin/python tools/s9/ios_game.py link --llvm /opt/homebrew/opt/llvm@20/bin \
+       --variants private/generated/s9/ios/variants
    ```
 
-   It writes `private/generated/s9/ios/game/libsa2game.a` and prints `IOS_GAME_OK`.
+   Without `--variants` the game links without the code-patch tweaks: the Tweaks screen still lists them, and the game's log names each one it was built without. It writes `private/generated/s9/ios/game/libsa2game.a` and prints `IOS_GAME_OK`.
 
 5. Build the app's libraries and its Xcode project:
 
@@ -93,6 +106,7 @@ Everything a bug report needs stays on the device, in the app's folder in the Fi
 - **Renderer switches**: DXT decoded on the CPU, and SDL_gpu's debug mode.
 - **Renderer check**: play a recorded stream (`.sa2s`) through the player with no game.
 - **Logs**: `app.log` (this launch) and `app.previous.log`. Every line also goes to the unified log, so Xcode's console and Console.app show them while the device is connected.
+- **Speed and memory**: every 30 seconds the report has a `perf:` line (frames a second, thermal state, the app's memory and how much more iOS allows), and `mem.tsv` in the session folder has the memory every second, with Metal's and malloc's parts. Two heavier probes are off unless a line in **game.env.extra** turns them on: `SA2_IOS_PROF=1` samples every thread's stack a hundred times a second and writes where the time went to `prof.txt`; `SA2_IOS_MEMWATCH=1` samples memory five times a second and writes `mem-big.txt`, every allocation of 32 MiB or more with its call stack and, at each jump of the footprint, what it is made of. When iOS ends the app for its memory, it often leaves no crash report: look for a **JetsamEvent** under Settings › Privacy & Security › Analytics & Improvements › Analytics Data, and at the end of `mem.tsv`.
 - **Under Xcode's debugger**, the scheme's lldb init file (`host/ios/lldbinit`) passes the faults the runtime handles itself through to it, so a session plays as it does without the debugger.
 
 ## Where things are
@@ -111,13 +125,17 @@ Everything a bug report needs stays on the device, in the app's folder in the Fi
 
 ## What is not verified
 
-These are the parts most likely to need work on the first device builds:
+What the first device sessions found and fixed, so that a regression is recognised:
 
-- **Every shader through SPIRV-Cross.** `host/d3d9gpu/test/metal_check.py` converted the specialised pixel shaders of the desktop profile; the Vulkan 1.1 profile the Metal device uses has not been converted at scale, and nothing has drawn on a Metal device yet.
-- **The prelink of the whole lifted image** with Apple's linker, and the LLVM 20 objects' compatibility with it.
-- **Darwin's pipes and FIFOs.** Darwin's pipes hold at most 64 KB, against the 1 MB the Linux and Android sessions ask for. The relay paces the game and needs no larger pipe, but throughput has not been measured. `mkfifo` inside an app's sandbox is expected to work, and a failure is reported by name.
-- **Memory.** The game reserves 512 MB of guest address space and 64 MB of stack per guest thread. Devices with less memory may close the app; `-DSA2_IOS_INCREASED_MEMORY=ON` (a paid team's entitlement) raises the limit where iOS allows.
-- **Performance and heat.** The guest's threads run one at a time on the app's highest-priority thread. Nothing is measured yet.
-- **The installer's ZIP route** on a device, and folders chosen outside the app's own.
+- **Darwin's `poll()` on the stream FIFO** reported nothing while the game sat blocked in a write to it, so every wait ran to its timeout and the game ran at 1–2 frames a second with every thread idle. The session's waits on its pipes go through `select()` on Apple platforms (`host/sa2_poll_select.h`).
+- **SDL_gpu's Metal backend** keeps every buffer it makes when a mapped transfer buffer is cycled while still marked in use, and it marks one idle only at a later submit. The renderer's 64 MB upload ring, cycled each frame, grew by gigabytes at each scene change until iOS ended the app. On Metal the renderer keeps four ring buffers and picks an idle one itself (`host/d3d9gpu/d9g_gpu_sdl.cpp`, `kMetalRings`).
+- **Metal's vertex layouts** abort the app on a stride of 0 at a per-instance rate (DXVK's dummy binding); the renderer gives it stride 16 there, and refuses any other layout Metal would abort on by name.
+- **SDL without Vulkan** leaves `SDL_Vulkan_GetInstanceExtensions`'s hook null on UIKit; the player skips the Vulkan checks before CreateDevice on iOS.
+
+Still not verified:
+
+- **Other devices.** Only one recent iPhone (an A20 Pro) has run the game. The app's footprint is about 1–1.4 GB, well inside a recent iPhone's limit; older devices with less memory are untried. `-DSA2_IOS_INCREASED_MEMORY=ON` (a paid team's entitlement) raises the limit where iOS allows.
+- **Every shader through SPIRV-Cross.** Every shader of a story stage and Chao World converted and drew; the rest of the game's stages have not been played.
+- **Controllers, the touch layout editor, iPad, saves import and export, the installer's ZIP route** on a device, and folders chosen outside the app's own.
 
 Report what you find with a session's ZIP (Debug › Session folders › Share), keeping game data out of public issues as [CONTRIBUTING.md](../CONTRIBUTING.md) asks.
