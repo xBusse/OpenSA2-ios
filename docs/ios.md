@@ -14,65 +14,82 @@ Every other platform runs the game as a process of its own beside the player. iO
 
 The relay, the pacing, the stream contract, the touch overlay, the settings, the tweaks and the session records are the Android session's (`host/ios/native/sa2_ios_session.mm` follows `host/android/native/sa2_android_session.cpp` step by step).
 
-## What you need
-
-- A Linux build machine that can already build the game for Android: the analyzed executable, the translated modules, DXVK's build and the other inputs under `private/` ([the developer guide](getting-started.md)). The iOS build reuses those inputs.
-- A Mac with Xcode 16 or later, and from Homebrew: `cmake`, `ninja`, `llvm@20`, `gpatch` (GNU patch, for SDL3's patches; macOS's own `patch` is Apple's), `python@3.13` and, if pip finds no wheel for `iced-x86`, `rust`. The lifted modules are LLVM 20 IR, which Xcode's own clang cannot read.
-- Python 3.10 or later with the checkout's requirements in `.venv`. The `python3` Xcode installs is 3.9, which the requirements' pins refuse, so make the environment with Homebrew's: `/opt/homebrew/bin/python3.13 -m venv .venv && .venv/bin/python -m pip install --upgrade pip && .venv/bin/python -m pip install -r requirements.txt`.
-- An iPhone or iPad on iOS 15 or later. More memory is better: see [What is not verified](#what-is-not-verified). A free Apple account can sign the app for seven days at a time; a sideloading tool such as AltStore or SideStore can install and refresh it. The game is compiled ahead of time, so the app needs no JIT and no special entitlement.
-
 ## Build it
 
-1. On the Linux machine, build the Android game's inputs as usual (`tools/s3/whole_image/lift_all.py`, `tools/s4/rebuild_image.py`, `tools/s5/build_host_deps.sh`, and `tools/s7/release_build.py --only tables` for the overlay table).
+To play, you only need the `.ipa` and your game folder: if someone has published a build, skip to [Put the game on the device](#put-the-game-on-the-device). Building one yourself has two halves:
 
-2. Compile the lifted image for iOS. This step needs only an LLVM 20 clang, so it can run on the Linux machine (it takes as long as the Android compile):
+- **The Linux half** translates the game. It needs your Steam copy's `sonic2app.exe`, about 25 GB of disk and two to three hours, and ends in one archive, `mac-inputs.tar.xz` (about 110 MB). `tools/s9/ios_inputs.py` runs all of it.
+- **The macOS half** links that into the app with Xcode and makes the unsigned `.ipa`, in about 20 minutes. `tools/s9/ios_mac.sh` runs all of it. Apple's iOS build tools run only on macOS, so this half needs a Mac, yours or one rented by the minute in the cloud.
 
-   ```bash
-   .venv/bin/python tools/s9/ios_game.py compile --clang /usr/lib/llvm-20/bin/clang --jobs 8
-   ```
+Neither half has to run on a computer you own. Pick one of these:
 
-   Build the code-patch tweaks for those objects too (`no-music`, `no-voices`, `spin-dash-fast`, `stage-select-all`, `victory-powerups`). On Linux `nm` must be LLVM's, since GNU nm reads no Mach-O object; on the Mac its own `nm` does:
+| | Linux half | macOS half | What you need |
+| --- | --- | --- | --- |
+| [A. All in the cloud](#a-all-in-the-cloud-no-computer-of-your-own) | GitHub Actions (Linux) | GitHub Actions (macOS) | A GitHub account and a private repository; a phone or tablet is enough |
+| [B. Cloud Linux, your Mac](#b-a-cloud-linux-machine-and-a-mac) | Any Linux machine or cloud VM | Your Mac | How this port was first built |
+| [C. Your own machines](#b-a-cloud-linux-machine-and-a-mac) | Your Linux PC | Your Mac | The same commands as B |
 
-   ```bash
-   SA2_NM=llvm-nm-20 .venv/bin/python tools/s8/variants/variants.py build \
-       --objects private/generated/s9/ios/objects-double --out private/generated/s9/ios/variants
-   ```
+Either way, nothing of the game goes into the public repository: the executable and everything translated from it stay under `private/` (ignored) or in your private repository. The `.ipa` itself holds the recompiled game logic and the port's runtime, with no original executable or assets, as upstream's Windows, Android and Linux downloads do.
 
-3. Copy the checkout, `private/` included, to the Mac. Keep the same relative layout; absolute paths in DXVK's compile commands are moved onto the new checkout by the build. DXVK's source must arrive as a git checkout at its pinned commit (the shader translator's build reads its commit), so copy its `.git` too, or clone it again on the Mac:
+### Getting `sonic2app.exe`
 
-   ```bash
-   rsync -a --info=progress2 OpenSA2/ mac:OpenSA2/
-   # or, on the Mac, when private/s5-tools/src/dxvk-3.1.1 came without its .git:
-   rm -rf private/s5-tools/src/dxvk-3.1.1
-   git clone --branch v3.1.1 --recurse-submodules https://github.com/doitsujin/dxvk.git private/s5-tools/src/dxvk-3.1.1
-   ```
+Every route starts from your Steam copy's `sonic2app.exe` (the 2012 PC release; its sha256 is pinned in `tools/pins.json`), and the device needs the whole game folder (`sonic2app.exe` and `resource/`, about 3 GB).
 
-   The libpng tarball the app's dependencies use is under `private/predecessor-tools/win-deps/`; fetch it on the Mac if the Linux machine could not (`curl -fL -o private/predecessor-tools/win-deps/libpng-1.6.59.tar.xz https://download.sourceforge.net/libpng/libpng-1.6.59.tar.xz`).
+- **With a Windows PC or a Steam Deck**: Steam's own folder (Steam › Sonic Adventure 2 › Manage › Browse local files).
+- **Without one**: Steam will not install a Windows-only game on a Mac, but [DepotDownloader](https://github.com/SteamRE/DepotDownloader) downloads it from any machine, a cloud one included: a [GitHub Codespace](https://github.com/features/codespaces) opens a Linux terminal in a browser, on a phone or tablet too. With your own Steam login (approve it in the Steam app when it asks):
 
-4. On the Mac, link the game (the runtime is compiled for the iOS SDK here):
+  ```bash
+  ./DepotDownloader -app 213610 -os windows -username YOUR_STEAM_NAME -dir SA2
+  cd SA2 && zip -r ../SA2.zip . -x '.DepotDownloader/*'   # the whole game folder, for the device
+  ```
 
-   ```bash
-   .venv/bin/python tools/s9/ios_game.py link --llvm /opt/homebrew/opt/llvm@20/bin \
-       --variants private/generated/s9/ios/variants
-   ```
+  Download `SA2/sonic2app.exe` for the build, and `SA2.zip` for the device (the app installs from a ZIP: [Put the game on the device](#put-the-game-on-the-device)).
 
-   Without `--variants` the game links without the code-patch tweaks: the Tweaks screen still lists them, and the game's log names each one it was built without. It writes `private/generated/s9/ios/game/libsa2game.a` and prints `IOS_GAME_OK`.
+The Linux half also needs the executable **unpacked by [Steamless](https://github.com/atom0s/Steamless) 3.1.0.5** with its default options (Steam's DRM wrapper hides the code it translates). Steamless is a Windows (.NET) program: route A runs it on a Windows runner for you; otherwise run it on Windows (`Steamless.CLI.exe --quiet sonic2app.exe` writes `sonic2app.exe.unpacked.exe`) and hand that file to `ios_inputs.py`, which renames two of its sections as the pinned copy names them and checks the result against the pin.
 
-5. Build the app's libraries and its Xcode project:
+### A. All in the cloud (no computer of your own)
 
-   ```bash
-   .venv/bin/python tools/s9/ios_app.py --team YOURTEAMID
-   ```
+GitHub runs all three steps: a Windows runner unpacks the executable, a Linux runner translates the game, a macOS runner builds the `.ipa`. Everything happens in a **private** repository of yours, so the executable and the translated game are never public. All of it can be done from a phone's browser.
 
-   This builds zlib, libpng, zstd, the patched SDL3, SPIRV-Cross and SDL_shadercross, the shader translator, the renderer, the player, the relay and the installer as static libraries, writes the app's resources, and generates `private/generated/s9/ios/xcode/SA2Recomp.xcodeproj`. Leave out `--team` to choose a team in Xcode instead.
+1. **Make a private repository** on GitHub (for example `OpenSA2-ios-build`). It only holds the workflow and your executable; the source is checked out from the public repository at each run.
+2. **Upload your executable**: in the new repository, **Releases › Create a new release**, tag `game`, attach `sonic2app.exe` (only the executable: the build needs nothing else), and publish it. The repository is private, so the release is too.
+3. **Add the workflow**: **Add file › Create new file**, name it `.github/workflows/ios-build.yml`, and paste in [`tools/s9/ci/ios-build.yml`](../tools/s9/ci/ios-build.yml). Commit it.
+4. **Run it**: **Actions › SA2 iOS build › Run workflow**. Leave the source as `xBusse/OpenSA2-ios` and `ios-port` (or name your own fork and branch). A run takes two to three hours, nearly all of it the Linux job.
+5. **Take the `.ipa`**: the run makes a release in your private repository with `SA2Recomp.ipa` attached (and keeps it as the run's artifact for 30 days). Open it on the device with your sideloading tool, or publish it.
 
-6. Open the project in Xcode, choose your device, and run. Or make an unsigned `.ipa` for a sideloading tool to sign:
+Its cost on GitHub's free plan: a private repository gets 2,000 runner minutes a month, macOS minutes count ten times and Windows twice, and one run uses roughly 150 Linux, 20 macOS and 5 Windows minutes: about 360 of the 2,000. If a run stops, the Linux job uploads its logs (`linux-logs`); `ios_inputs.py` names the step and the end of that step's log.
 
-   ```bash
-   .venv/bin/python tools/s9/ios_app.py --only ipa
-   ```
+### B. A cloud Linux machine and a Mac
 
-   The file is `private/generated/s9/ios/SA2Recomp.ipa`.
+This is how the port was first built: the Linux half in a cloud container, the macOS half on a Mac. A Linux PC of your own does the same.
+
+**The Linux half** (Ubuntu 24.04, x86-64; about 25 GB free, 7 GB of memory, more cores make it faster):
+
+```bash
+sudo apt-get install -y clang-20 llvm-20 git curl unzip xz-utils python3-venv
+git clone -b ios-port https://github.com/xBusse/OpenSA2-ios.git && cd OpenSA2-ios
+python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python tools/s9/ios_inputs.py all \
+    --exe ~/sonic2app.exe --unpacked ~/sonic2app.exe.unpacked.exe
+```
+
+It fetches and checks its own tools (Ghidra, a JDK, Zig, Remill, the Mod Loader's names, DXVK's source; each download is held to the hash it had when this recipe was proven), then analyses the executable, translates and compiles the game for iOS, and writes `private/generated/s9/ios/mac-inputs.tar.xz`. Each step is skipped when its output is there, so a run that stops can be started again; `--force STEP` redoes one, and `.venv/bin/python tools/s9/ios_inputs.py --help` lists the steps. On a small disk add `--prune`, which deletes each stage's raw IR once it is compiled.
+
+**The macOS half** (Xcode 16 or later, [Homebrew](https://brew.sh)): copy `mac-inputs.tar.xz` to the Mac, then
+
+```bash
+git clone -b ios-port https://github.com/xBusse/OpenSA2-ios.git && cd OpenSA2-ios
+bash tools/s9/ios_mac.sh ~/Downloads/mac-inputs.tar.xz --install-deps
+```
+
+`--install-deps` installs what it needs from Homebrew (`cmake`, `ninja`, `llvm@20`, `gpatch`, `python@3.13`); without it, it names what is missing. It makes the `.venv` with Homebrew's Python (Xcode's `python3` is 3.9, which the requirements refuse; if pip then has to build `iced-x86` from source, `brew install rust`), clones DXVK at its pinned commit, fetches libpng if the Linux machine could not, links the game with the code-patch tweaks, builds the app's libraries and Xcode project, and writes `private/generated/s9/ios/SA2Recomp.ipa` (`--out DIR` copies it there). `--team TEAMID` signs the Xcode project for running from Xcode instead.
+
+The steps it runs, for reference: `tools/s9/ios_game.py link --llvm $(brew --prefix llvm@20)/bin --variants private/generated/s9/ios/variants`, then `tools/s9/ios_app.py`, then `tools/s9/ios_app.py --only ipa`.
+
+### Rebuilding after an update
+
+- **The app, the runtime, the renderer or the player changed** (most updates): on the Mac, `git pull && bash tools/s9/ios_mac.sh`. No archive is needed: it reuses the one already unpacked. In the cloud, run the workflow again.
+- **The translation changed** (the lift tools, `Documentation/lifted-extras.json`, the f80 pass or the code-patch tweaks' specs): run the Linux half again (`ios_inputs.py all --force ios --force variants`, or `--force` the step that changed and the ones after it), then the Mac half with the new archive.
 
 Without a game library, `ios_app.py` still builds the app with a stand-in that refuses to start a game. That build checks everything else, and its renderer check can play a recorded stream.
 
@@ -121,6 +138,10 @@ Everything a bug report needs stays on the device, in the app's folder in the Fi
 | `runtime/sa2_trap.c` | The trap backend's Darwin pieces (signal context, image bounds, thread names). |
 | `tools/s9/ios_game.py` | The game library: the lifted image for arm64-apple-ios, the runtime, the wraps and the prelink. |
 | `tools/s9/ios_app.py` | Every other library, the resources, the Xcode project and the `.ipa`. |
+| `tools/s9/ios_inputs.py` | The whole Linux half, step by step, ending in `mac-inputs.tar.xz`. |
+| `tools/s9/ios_mac.sh` | The whole macOS half, from that archive to the `.ipa`. |
+| `tools/s9/ci/ios-build.yml` | Both halves on GitHub's runners, for a private repository (route A). |
+| `tools/s4/lift_extras_listed.py` | The lifted extras rebuilt from `Documentation/lifted-extras.json`, on a machine that never ran the plays they came from. |
 | `tools/s9/macho_wrap.py` | GNU ld's `--wrap` made on Mach-O objects. |
 
 ## What is not verified
