@@ -115,7 +115,8 @@ endif()
 target_link_libraries(SA2Recomp PRIVATE
     ${LIBS}
     "-framework AVFoundation" "-framework AudioToolbox" "-framework CoreAudio" "-framework CoreBluetooth"
-    "-framework CoreFoundation" "-framework CoreGraphics" "-framework CoreHaptics" "-framework CoreMotion"
+    "-framework CoreFoundation" "-framework CoreGraphics" "-framework CoreHaptics" "-framework CoreMedia"
+    "-framework CoreMotion" "-framework CoreVideo"
     "-framework CoreText" "-framework Foundation" "-framework GameController" "-framework Metal"
     "-framework QuartzCore" "-framework UIKit" "-framework UniformTypeIdentifiers"
     # SDL's scene delegate is named only by Info.plist: -ObjC loads every Objective-C class of the archives.
