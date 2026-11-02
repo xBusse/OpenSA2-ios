@@ -18,7 +18,7 @@ The relay, the pacing, the stream contract, the touch overlay, the settings, the
 
 To play, you only need the `.ipa` and your game folder: if someone has published a build, skip to [Put the game on the device](#put-the-game-on-the-device). Building one yourself has two halves:
 
-- **The Linux half** translates the game. It needs your Steam copy's `sonic2app.exe`, about 25 GB of disk and two to three hours, and ends in one archive, `mac-inputs.tar.xz` (about 110 MB). `tools/s9/ios_inputs.py` runs all of it.
+- **The Linux half** translates the game. It needs your Steam copy's `sonic2app.exe`, about 25 GB of disk and about three and a half hours on a two-core machine (GitHub's runner), and ends in one archive, `mac-inputs.tar.xz` (about 110 MB). `tools/s9/ios_inputs.py` runs all of it.
 - **The macOS half** links that into the app with Xcode and makes the unsigned `.ipa`, in about 20 minutes. `tools/s9/ios_mac.sh` runs all of it. Apple's iOS build tools run only on macOS, so this half needs a Mac, yours or one rented by the minute in the cloud.
 
 Neither half has to run on a computer you own. Pick one of these:
@@ -54,10 +54,10 @@ GitHub runs all three steps: a Windows runner unpacks the executable, a Linux ru
 1. **Make a private repository** on GitHub (for example `OpenSA2-ios-build`). It only holds the workflow and your executable; the source is checked out from the public repository at each run.
 2. **Upload your executable**: in the new repository, **Releases › Create a new release**, tag `game`, attach `sonic2app.exe` (only the executable: the build needs nothing else), and publish it. The repository is private, so the release is too. (Or commit it to the repository as `game/sonic2app.exe`: the workflow takes it from either place.)
 3. **Add the workflow**: **Add file › Create new file**, name it `.github/workflows/ios-build.yml`, and paste in [`tools/s9/ci/ios-build.yml`](../tools/s9/ci/ios-build.yml). Commit it.
-4. **Run it**: **Actions › SA2 iOS build › Run workflow**. Leave the source as `xBusse/OpenSA2-ios` and `ios-port` (or name your own fork and branch). A run takes two to three hours, nearly all of it the Linux job.
+4. **Run it**: **Actions › SA2 iOS build › Run workflow**. Leave the source as `xBusse/OpenSA2-ios` and `ios-port` (or name your own fork and branch). A run takes about three and a half hours, nearly all of it the Linux job. If only the macOS job fails, **Re-run failed jobs** reuses the Linux job's archive (kept for a day) and takes ten minutes.
 5. **Take the `.ipa`**: the run makes a release in your private repository with `SA2Recomp.ipa` attached (and keeps it as the run's artifact for 30 days). Open it on the device with your sideloading tool, or publish it.
 
-Its cost on GitHub's free plan: a private repository gets 2,000 runner minutes a month, macOS minutes count ten times and Windows twice, and one run uses roughly 150 Linux, 20 macOS and 5 Windows minutes: about 360 of the 2,000. If a run stops, the Linux job uploads its logs (`linux-logs`); `ios_inputs.py` names the step and the end of that step's log.
+Its cost on GitHub's free plan: a private repository gets 2,000 runner minutes a month, macOS minutes count ten times and Windows twice, and one run uses roughly 210 Linux, 10 macOS and 1 Windows minutes: about 320 of the 2,000. If a run stops, the Linux job uploads its logs (`linux-logs`); `ios_inputs.py` names the step and the end of that step's log.
 
 ### B. A cloud Linux machine and a Mac
 

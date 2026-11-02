@@ -9,8 +9,8 @@
 # artifact below lives only in the private repository (the intermediate ones for a day). The .ipa
 # it makes is what you publish, as upstream publishes its Windows, Android and Linux builds.
 #
-# Run it from the private repository's Actions tab (Run workflow). A first run takes about two to
-# three hours, nearly all of it the Linux job.
+# Run it from the private repository's Actions tab (Run workflow). A run takes about three and a
+# half hours, nearly all of it the Linux job.
 name: SA2 iOS build
 
 on:
