@@ -368,7 +368,7 @@ class IosBuilder(A.Builder):
         rev_src = (inc / "SDL_revision.h").read_text()
         revisions = re.findall(r'^#define SDL_REVISION "([^"\n]*)"\s*$', rev_src, re.M)
         vendors = re.findall(r'^#define SDL_VENDOR_INFO "([^"\n]*)"\s*$', rev_src, re.M)
-        if len(revisions) != 1 or vendors != [sdl["vendor_info"]]:
+        if len(revisions) != 1 or vendors != [sdl["vendor_info"] + self.IOS_SDL_MARK]:
             raise Refused(f"the SDL revision header reads {revisions} with vendor {vendors}")
         d = self.b / "gen/expected-gpu"
         d.mkdir(parents=True, exist_ok=True)
