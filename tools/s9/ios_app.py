@@ -43,6 +43,7 @@ Prints IOS_APP_OK <project or ipa> on success.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -185,6 +186,50 @@ class IosBuilder(A.Builder):
         finally:
             A.CC_JSON_REL = saved
 
+    # The iOS build's one change to SDL beyond patches/sdl3 (which every platform's build applies): the
+    # Metal driver compiles MSL with precise math. SDL passes no MTLCompileOptions, so Metal compiles
+    # every shader with fast math, which assumes no infinity or NaN, drops signed zero and makes pow,
+    # rsqrt and division approximate. The translator's shaders are DXVK's in its Strict float mode
+    # and ask Vulkan to preserve signed zero, infinity and NaN (d9g_shader_profile.h); fast math broke
+    # Chao World's lighting (flashing, wrong colours) on the device. Applied by exact text, once, and
+    # marked in SDL's revision (SDL_VENDOR_INFO + IOS_SDL_MARK): an altered source, plainly marked
+    # (zlib licence, clause 2); not from the SDL project and not submitted to it.
+    IOS_SDL_MARK = " + ios-metal-precise-math"
+    IOS_SDL_EDIT = (
+        "src/gpu/metal/SDL_gpu_metal.m",
+        """            newLibraryWithSource:codeString
+                         options:nil
+                           error:&error];""",
+        """            newLibraryWithSource:codeString
+                         options:SA2_PreciseMathOptions()
+                           error:&error];""",
+        """static MTLCompileOptions *SA2_PreciseMathOptions(void)
+{
+    /* sa2-recomp (iOS build, tools/s9/ios_app.py): MSL compiled with precise math, not Metal's default
+       fast math. Not from the SDL project. */
+    MTLCompileOptions *options = [MTLCompileOptions new];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    options.fastMathEnabled = NO;
+#pragma clang diagnostic pop
+    return options;
+}
+
+""")
+
+    def ios_sdl_edit(self, tree: Path) -> None:
+        rel, old, new, helper = self.IOS_SDL_EDIT
+        f = tree / rel
+        text = f.read_text()
+        if text.count(old) != 1:
+            raise Refused(f"{rel}: the text the iOS build's precise-math edit replaces is not there exactly once")
+        marker = "static void METAL_INTERNAL_"
+        at = text.find(marker)
+        if at < 0:
+            raise Refused(f"{rel}: no METAL_INTERNAL_ function to put the precise-math helper before")
+        text = text[:at] + helper + text[at:]
+        f.write_text(text.replace(old, new))
+
     # ------------------------------------------------------------------ SDL3, static, for iOS
     def sdl3(self) -> dict:
         sdl = self.tools["sdl3"]
@@ -200,12 +245,13 @@ class IosBuilder(A.Builder):
                      "-DCMAKE_OSX_SYSROOT=iphoneos", "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_INSTALL_PREFIX={install}",
                      "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_TESTS=OFF", "-DSDL_EXAMPLES=OFF",
                      "-DSDL_TEST_LIBRARY=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF",
-                     f"-DSDL_VENDOR_INFO={sdl['vendor_info']}"]
+                     f"-DSDL_VENDOR_INFO={sdl['vendor_info']}{self.IOS_SDL_MARK}"]
         stamp_text = json.dumps({"tarball": sdl["sha256"], "patches": [p["sha256"] for p in sdl.get("patches", [])],
+                                 "ios_edit": hashlib.sha256(repr(self.IOS_SDL_EDIT).encode()).hexdigest(),
                                  "configure": configure[1:]}, sort_keys=True)
         stamp = install / ".sa2-build"
         self.record["inputs"]["sdl3"] = {"path": str(tarball.relative_to(ROOT)), "sha256": sdl["sha256"],
-                                         "vendor_info": sdl["vendor_info"]}
+                                         "vendor_info": sdl["vendor_info"] + self.IOS_SDL_MARK}
         lib = install / "lib/libSDL3.a"
         if stamp.is_file() and stamp.read_text() == stamp_text and lib.is_file():
             return {"rebuilt": False}
@@ -221,6 +267,7 @@ class IosBuilder(A.Builder):
         self.sh([py, ROOT / "tools/s5/sdl3_patches.py", "source", "--root", ROOT, "--tree", tree])
         self.sh([py, ROOT / "tools/s5/sdl3_patches.py", "apply", "--root", ROOT, "--tree", tree],
                 log=self.b / "gen/sdl3-patch.log")
+        self.ios_sdl_edit(tree)
         build.mkdir(parents=True)
         self.sh([*configure, "-S", tree, "-B", build], log=self.b / "gen/sdl3-configure.log")
         self.sh([self.cmake, "--build", build, "-j", str(self.jobs)], log=self.b / "gen/sdl3-build.log")
