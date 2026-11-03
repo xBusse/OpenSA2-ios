@@ -146,6 +146,10 @@ public:
     // the read, with the count that look saw (-1 where it cannot be read). A test's seam:
     // test_relay.cpp's thief takes bytes there.
     std::function<void(long unread)> on_read_look;
+    // Called on the reader's thread, mu_ not held, with every chunk read from the game's FIFO, in
+    // order, before it is handed on: a host's copy of the stream (the iOS app's stream recorder
+    // writes it to a file the player can replay). Set before run().
+    std::function<void(const uint8_t*, size_t)> on_bytes;
     // The most one read of the game's FIFO takes; set before run(). The launcher's FIFO is no
     // larger, so a read takes all it holds. A test's seam: test_relay.cpp makes it smaller, so
     // bytes wait in the FIFO through a hold, as they do when the game writes between a read and

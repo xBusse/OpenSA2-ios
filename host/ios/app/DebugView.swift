@@ -28,6 +28,7 @@ struct DebugView: View {
                 NavigationLink("The last session's report", destination: TextFileView(title: "last-session.txt",
                     url: model.documents.appendingPathComponent("last-session.txt")))
                 Toggle("Record sessions (saves, config, pads)", isOn: $s.recordSessions)
+                Toggle("Record the graphics stream (stream.sa2s.gz, large)", isOn: $s.recordStream)
             }
             Section(header: Text("In game"),
                     footer: Text("The menu: the button at the top, or a tap with three fingers. The debug overlay shows the console's last lines and the frames handed on; it takes no touches.")) {

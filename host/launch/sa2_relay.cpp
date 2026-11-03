@@ -415,6 +415,9 @@ void Relay::run(const std::atomic<bool>& game_alive) {
                 cv_.notify_all();
             }
         }
+        // A copy of the bytes, in order, for a host that saves the stream (the iOS app's stream
+        // recorder): on the reader's thread, mu_ not held.
+        if (on_bytes) on_bytes(buf.data(), size_t(n));
         // The bytes still go on to the player, which ends the session on the gap; the game is
         // not left waiting on credits for frames the parser may no longer count.
         if (first_problem) close_credits();

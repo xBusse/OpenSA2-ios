@@ -69,6 +69,7 @@
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #include <algorithm>
 #include <atomic>
@@ -614,6 +615,34 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
     sa2l::Relay relay(relay_in, video_w, a.pace ? 1u : 0u, kRelayCap, pace_w);
     relay.nudge = [] { return false; };          // no process to nudge (the header)
     relay.note = [](const std::string& line) { say("%s", line.c_str()); };
+    // The stream recorder (Debug: SA2_IOS_STREAM_SAVE=1 in game.env.extra): every byte the game
+    // writes, gzip'd (level 1) into the session folder as stream.sa2s.gz, which the player replays
+    // after gunzip (`sa2_player stream.sa2s`) on any platform. A whole session from its start: the
+    // stream's resources are made once, so a part of it does not replay. Written on the relay's
+    // reader thread, so a slow write paces the game, as a full FIFO would.
+    gzFile stream_gz = nullptr;
+    uint64_t stream_bytes = 0;
+    const std::string stream_path = session + "/stream.sa2s.gz";
+    if (const std::string* v = env_find(genv, "SA2_IOS_STREAM_SAVE"); v && *v == "1") {
+        stream_gz = gzopen(stream_path.c_str(), "wb1");
+        if (stream_gz) {
+            gzbuffer(stream_gz, 1u << 20);
+            say("stream recorder: on, writing %s (gzip)", stream_path.c_str());
+            relay.on_bytes = [&stream_gz, &stream_bytes](const uint8_t* p, size_t n) {
+                if (!stream_gz) return;
+                if (gzwrite(stream_gz, p, unsigned(n)) != int(n)) {
+                    int code = 0;
+                    say("stream recorder: the write failed (%s); recording stops here", gzerror(stream_gz, &code));
+                    gzclose(stream_gz);
+                    stream_gz = nullptr;
+                    return;
+                }
+                stream_bytes += n;
+            };
+        } else {
+            say("stream recorder: %s does not open: %s", stream_path.c_str(), strerror(errno));
+        }
+    }
     std::thread relay_thread([&] {
         pthread_setname_np("sa2-relay");
         relay.run(game_alive);
@@ -792,6 +821,14 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
     say("memory: peak footprint %.0f MiB (mem.tsv)", mem_peak.load());
     watch.join();
     relay_thread.join();
+    if (stream_gz) {
+        const int closed = gzclose(stream_gz);
+        stream_gz = nullptr;
+        struct stat st{};
+        const long long gz = stat(stream_path.c_str(), &st) == 0 ? (long long)st.st_size : -1;
+        say("stream recorder: %llu bytes saved, %lld bytes gzip'd%s", (unsigned long long)stream_bytes, gz,
+            closed == Z_OK ? "" : " (the file did not close cleanly)");
+    }
     const sa2l::RelayStats rs = relay.stats();
     sa2l::close_fd(cancel_w);
     sa2l::close_fd(end_r);

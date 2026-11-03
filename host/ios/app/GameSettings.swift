@@ -56,6 +56,7 @@ final class GameSettings: ObservableObject {
     @Published var padMap: String { didSet { d.set(padMap, forKey: "pad_map") } }
     @Published var tweaksOn: Set<String> { didSet { d.set(Array(tweaksOn).sorted(), forKey: "tweaks_on") } }
     @Published var recordSessions: Bool { didSet { d.set(recordSessions, forKey: "record_sessions") } }
+    @Published var recordStream: Bool { didSet { d.set(recordStream, forKey: "record_stream") } }
     // iOS's own.
     @Published var audio: Bool { didSet { d.set(audio, forKey: "audio") } }
     @Published var pace: Bool { didSet { d.set(pace, forKey: "pace") } }
@@ -80,6 +81,7 @@ final class GameSettings: ObservableObject {
         padMap = d.string(forKey: "pad_map") ?? ""
         tweaksOn = Set(d.stringArray(forKey: "tweaks_on") ?? [])
         recordSessions = d.object(forKey: "record_sessions") as? Bool ?? false
+        recordStream = d.object(forKey: "record_stream") as? Bool ?? false
         audio = d.object(forKey: "audio") as? Bool ?? true
         pace = d.object(forKey: "pace") as? Bool ?? true
         menuButton = d.object(forKey: "menu_button") as? Bool ?? true
@@ -165,6 +167,7 @@ final class GameSettings: ObservableObject {
         let t = tweaks(also: launchTweaks)
         if !t.isEmpty { e.append("SA2_TWEAKS=" + t) }
         if recordSessions { e.append("SA2_RECORD_SESSION=1") }
+        if recordStream { e.append("SA2_IOS_STREAM_SAVE=1") }
         if gpuNoBC { e.append("SA2_D3D9GPU_NO_BC=1") }
         if gpuDebug { e.append("SA2_D3D9GPU_DEBUG=1") }
         return e
@@ -200,7 +203,7 @@ final class GameSettings: ObservableObject {
         resolution = fresh.resolution; aspect = fresh.aspect; frameskip = fresh.frameskip
         touchSize = fresh.touchSize; touchOpacity = fresh.touchOpacity; pictureY = fresh.pictureY
         layoutLandscape = ""; layoutPortrait = ""; touchMap = ""; padMap = ""; tweaksOn = []
-        recordSessions = false; audio = true; pace = true; menuButton = true; debugHud = false
+        recordSessions = false; recordStream = false; audio = true; pace = true; menuButton = true; debugHud = false
         gpuNoBC = false; gpuDebug = false
     }
 }
