@@ -1804,9 +1804,10 @@ constexpr const char kLiveSessionProperty[] = "sa2.live_session";
 // model, OpKill for demote, the state read as 32-bit words, no float controls, no 16-bit arithmetic),
 // with no vendor rule (driver ID 0) and no ClipDistance output (ShaderProfile::no_clip_distance: SA2
 // enables no user clip plane, and a draw that did is refused by name): the least SPIRV-Cross's MSL
-// backend has to understand. The SDL patch (patches/sdl3) reports no border addressing and no depth
-// clip with clamp on iOS, so the shader fallback and a live session's clip-only draws apply, as on a
-// stock SDL. The BC formats and D24S8 are asked of the device as on Vulkan (SdlGpu's constructor):
+// backend has to understand. The SDL patch (patches/sdl3) reports no depth clip with clamp on Metal,
+// so a live session's clip-only draws apply, as on a stock SDL; border addressing is reported where
+// the GPU has Metal's border colour (the iOS build's SDL edit, tools/s9/ios_app.py: Apple7, A14, and
+// later), and older GPUs take the shader fallback. The BC formats and D24S8 are asked of the device as on Vulkan (SdlGpu's constructor):
 // where it has none, DXT textures are decoded on the CPU and depth is D32_FLOAT_S8_UINT.
 static std::unique_ptr<Gpu> make_metal_gpu(bool debug, const CapsOff& off, std::string* err) {
     const char* bc_prop = nullptr;

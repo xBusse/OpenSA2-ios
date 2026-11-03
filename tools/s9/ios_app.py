@@ -186,24 +186,23 @@ class IosBuilder(A.Builder):
         finally:
             A.CC_JSON_REL = saved
 
-    # The iOS build's one change to SDL beyond patches/sdl3 (which every platform's build applies): the
-    # Metal driver compiles MSL with precise math. SDL passes no MTLCompileOptions, so Metal compiles
-    # every shader with fast math, which assumes no infinity or NaN, drops signed zero and makes pow,
-    # rsqrt and division approximate. The translator's shaders are DXVK's in its Strict float mode
-    # and ask Vulkan to preserve signed zero, infinity and NaN (d9g_shader_profile.h); fast math broke
-    # Chao World's lighting (flashing, wrong colours) on the device. Applied by exact text, once, and
-    # marked in SDL's revision (SDL_VENDOR_INFO + IOS_SDL_MARK): an altered source, plainly marked
-    # (zlib licence, clause 2); not from the SDL project and not submitted to it.
-    IOS_SDL_MARK = " + ios-metal-precise-math"
-    IOS_SDL_EDIT = (
-        "src/gpu/metal/SDL_gpu_metal.m",
-        """            newLibraryWithSource:codeString
-                         options:nil
-                           error:&error];""",
-        """            newLibraryWithSource:codeString
-                         options:SA2_PreciseMathOptions()
-                           error:&error];""",
-        """static MTLCompileOptions *SA2_PreciseMathOptions(void)
+    # The iOS build's changes to SDL beyond patches/sdl3 (which every platform's build applies), to
+    # SDL's Metal driver, each applied by exact text, once, after the patches, and marked in SDL's
+    # revision (SDL_VENDOR_INFO + IOS_SDL_MARK): an altered source, plainly marked (zlib licence,
+    # clause 2); not from the SDL project and not submitted to it.
+    #  - Precise math. SDL passes no MTLCompileOptions, so Metal compiles every shader with fast math,
+    #    which assumes no infinity or NaN, drops signed zero and makes pow, rsqrt and division
+    #    approximate; the translator's shaders are DXVK's in its Strict float mode.
+    #  - Border addressing on iOS. patches/sdl3 offers CLAMP_TO_BORDER on Metal on macOS only, so on
+    #    iOS every D3DTADDRESS_BORDER sampler took the shader fallback (d9g_shader.cpp apply_border),
+    #    where Vulkan (Android, Linux) samples the border natively. Metal has had the border colour on
+    #    iOS since iOS 14, on Apple7-family GPUs (A14) and later (Skia's MtlCaps: isMac() || Apple7),
+    #    so there the device property reads true and the sampler takes MTLSamplerAddressModeClampTo
+    #    BorderColor; older GPUs keep the property false and the fallback. SA2's shadow maps sample
+    #    with BORDER (transparent black) on pixel stages 5-7; Chao World's models were drawn tinted and
+    #    flashing on the device (GitHub issue #2).
+    IOS_SDL_MARK = " + ios-metal-precise-math-border"
+    IOS_SDL_PRECISE = """static MTLCompileOptions *SA2_PreciseMathOptions(void)
 {
     /* sa2-recomp (iOS build, tools/s9/ios_app.py): MSL compiled with precise math, not Metal's default
        fast math. Not from the SDL project. */
@@ -215,20 +214,54 @@ class IosBuilder(A.Builder):
     return options;
 }
 
-""")
+"""
+    MAC_OR_IOS = "#if defined(SDL_PLATFORM_MACOS) || defined(SDL_PLATFORM_IOS) /* sa2-recomp iOS build */"
+    IOS_SDL_EDITS = (
+        ("precise math", """            newLibraryWithSource:codeString
+                         options:nil
+                           error:&error];""", """            newLibraryWithSource:codeString
+                         options:SA2_PreciseMathOptions()
+                           error:&error];"""),
+        ("border colour table", """#ifdef SDL_PLATFORM_MACOS
+static MTLSamplerBorderColor SDLToMetal_SamplerBorderColor[] = {""", MAC_OR_IOS + """
+static MTLSamplerBorderColor SDLToMetal_SamplerBorderColor[] = {"""),
+        ("border address mode", """#ifdef SDL_PLATFORM_MACOS
+    if (mode == SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_BORDER) {""", MAC_OR_IOS + """
+    if (mode == SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_BORDER) {"""),
+        ("border refusal", """#ifndef SDL_PLATFORM_MACOS
+        if (createinfo->address_mode_u == SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_BORDER ||""", """#ifndef SDL_PLATFORM_MACOS
+        if (!SDL_GetBooleanProperty(renderer->props, SDL_PROP_GPU_DEVICE_SA2RECOMP_SAMPLER_CLAMP_TO_BORDER_BOOLEAN, false) &&
+            (createinfo->address_mode_u == SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_BORDER ||"""),
+        ("border refusal close", """            createinfo->address_mode_w == SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_BORDER) {
+            SET_STRING_ERROR_AND_RETURN("CLAMP_TO_BORDER is not supported by this device", NULL);""", """            createinfo->address_mode_w == SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_BORDER)) {
+            SET_STRING_ERROR_AND_RETURN("CLAMP_TO_BORDER is not supported by this device", NULL);"""),
+        ("border colour", """#ifdef SDL_PLATFORM_MACOS
+        samplerDesc.borderColor = SDLToMetal_SamplerBorderColor[borderColor];""", MAC_OR_IOS + """
+        samplerDesc.borderColor = SDLToMetal_SamplerBorderColor[borderColor];"""),
+        ("border property", """#else
+        SDL_SetBooleanProperty(renderer->props, SDL_PROP_GPU_DEVICE_SA2RECOMP_SAMPLER_CLAMP_TO_BORDER_BOOLEAN, false);
+#endif""", """#elif defined(SDL_PLATFORM_IOS) /* sa2-recomp iOS build: the border colour on Apple7 (A14) and later */
+        SDL_SetBooleanProperty(renderer->props, SDL_PROP_GPU_DEVICE_SA2RECOMP_SAMPLER_CLAMP_TO_BORDER_BOOLEAN,
+                               [device supportsFamily:MTLGPUFamilyApple7]);
+#else
+        SDL_SetBooleanProperty(renderer->props, SDL_PROP_GPU_DEVICE_SA2RECOMP_SAMPLER_CLAMP_TO_BORDER_BOOLEAN, false);
+#endif"""),
+    )
+    IOS_SDL_FILE = "src/gpu/metal/SDL_gpu_metal.m"
 
     def ios_sdl_edit(self, tree: Path) -> None:
-        rel, old, new, helper = self.IOS_SDL_EDIT
-        f = tree / rel
+        f = tree / self.IOS_SDL_FILE
         text = f.read_text()
-        if text.count(old) != 1:
-            raise Refused(f"{rel}: the text the iOS build's precise-math edit replaces is not there exactly once")
+        for name, old, new in self.IOS_SDL_EDITS:
+            if text.count(old) != 1:
+                raise Refused(f"{self.IOS_SDL_FILE}: the text the iOS build's edit '{name}' replaces is not there "
+                              "exactly once (after patches/sdl3)")
+            text = text.replace(old, new)
         marker = "static void METAL_INTERNAL_"
         at = text.find(marker)
         if at < 0:
-            raise Refused(f"{rel}: no METAL_INTERNAL_ function to put the precise-math helper before")
-        text = text[:at] + helper + text[at:]
-        f.write_text(text.replace(old, new))
+            raise Refused(f"{self.IOS_SDL_FILE}: no METAL_INTERNAL_ function to put the precise-math helper before")
+        f.write_text(text[:at] + self.IOS_SDL_PRECISE + text[at:])
 
     # ------------------------------------------------------------------ SDL3, static, for iOS
     def sdl3(self) -> dict:
@@ -247,7 +280,7 @@ class IosBuilder(A.Builder):
                      "-DSDL_TEST_LIBRARY=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF",
                      f"-DSDL_VENDOR_INFO={sdl['vendor_info']}{self.IOS_SDL_MARK}"]
         stamp_text = json.dumps({"tarball": sdl["sha256"], "patches": [p["sha256"] for p in sdl.get("patches", [])],
-                                 "ios_edit": hashlib.sha256(repr(self.IOS_SDL_EDIT).encode()).hexdigest(),
+                                 "ios_edit": hashlib.sha256(repr((self.IOS_SDL_EDITS, self.IOS_SDL_PRECISE)).encode()).hexdigest(),
                                  "configure": configure[1:]}, sort_keys=True)
         stamp = install / ".sa2-build"
         self.record["inputs"]["sdl3"] = {"path": str(tarball.relative_to(ROOT)), "sha256": sdl["sha256"],
