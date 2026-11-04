@@ -15,6 +15,9 @@
 
 #include <SDL3/SDL_gpu.h>
 
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #if defined(SA2_HAVE_SHADERCROSS)
@@ -79,6 +82,26 @@ inline SDL_GPUShader* shader_from_spirv(SDL_GPUDevice* dev, const SDL_GPUShaderC
         ri.num_storage_textures = ci.num_storage_textures;
         ri.num_storage_buffers = ci.num_storage_buffers;
         ri.num_uniform_buffers = ci.num_uniform_buffers;
+        // SA2_IOS_MSL_DUMP (a directory; the iOS app's Debug switch sets it in the session): each module
+        // as converted, NNN_<stage>_s<samplers>_u<uniform buffers>.metal, beside its SPIR-V (.spv).
+        if (const char* dir = std::getenv("SA2_IOS_MSL_DUMP"); dir && *dir) {
+            static std::atomic<int> dumped{0};
+            const int n = dumped++;
+            char base[1024];
+            std::snprintf(base, sizeof base, "%s/%03d_%s_s%u_u%u", dir, n,
+                          ci.stage == SDL_GPU_SHADERSTAGE_VERTEX ? "vs" : "ps", ci.num_samplers, ci.num_uniform_buffers);
+            if (FILE* fs = std::fopen((std::string(base) + ".spv").c_str(), "wb")) {
+                std::fwrite(ci.code, 1, ci.code_size, fs);
+                std::fclose(fs);
+            }
+            if (void* msl = SDL_ShaderCross_TranspileMSLFromSPIRV(&info)) {
+                if (FILE* fm = std::fopen((std::string(base) + ".metal").c_str(), "wb")) {
+                    std::fputs(static_cast<const char*>(msl), fm);
+                    std::fclose(fm);
+                }
+                SDL_free(msl);
+            }
+        }
         SDL_GPUShader* s = SDL_ShaderCross_CompileGraphicsShaderFromSPIRV(dev, &info, &ri, 0);
         if (!s && why) *why = std::string("SDL_ShaderCross_CompileGraphicsShaderFromSPIRV (MSL ") + kMslVersion +
                               "): " + SDL_GetError();

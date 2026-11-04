@@ -115,7 +115,13 @@ public:
                 info_.bc_unsupported += std::string(info_.bc_unsupported.empty() ? "" : ", ") + gfmt_name(f);
         SDL_GPUTransferBufferCreateInfo ri{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, kRing, 0};
         ring_ = SDL_CreateGPUTransferBuffer(dev, &ri);
-        if (info_.driver == "metal" && ring_) {
+        // SA2_D3D9GPU_METAL_RING=0 (a diagnostic): SDL's own cycle on Metal as elsewhere; the app's
+        // footprint grows without the ring, so only for a short run.
+        const char* metal_ring = std::getenv("SA2_D3D9GPU_METAL_RING");
+        const bool ring_off = metal_ring && std::strcmp(metal_ring, "0") == 0;
+        if (info_.driver == "metal" && ring_off)
+            std::fprintf(stderr, "d3d9gpu: SA2_D3D9GPU_METAL_RING=0: the transfer ring cycles through SDL, as on Vulkan\n");
+        if (info_.driver == "metal" && ring_ && !ring_off) {
             rings_[0] = ring_;
             for (uint32_t i = 1; i < kMetalRings; ++i) rings_[i] = SDL_CreateGPUTransferBuffer(dev, &ri);
         }

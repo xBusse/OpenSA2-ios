@@ -403,6 +403,45 @@ void set_orientation(const std::string& o) {
     SDL_SetHint(SDL_HINT_ORIENTATIONS, hint);
 }
 
+// ---------------------------------------------------------------- the renderer diagnostics (both modes)
+
+// SA2_IOS_MSL_DUMP=1: every shader as Metal gets it, in <session>/msl (host/player/sa2_gpu_shader.h);
+// the variable then names that folder for the player.
+void msl_dump_env(EnvList& env, const std::string& session) {
+    const std::string* v = env_find(env, "SA2_IOS_MSL_DUMP");
+    if (!v || *v != "1") { env_drop(env, "SA2_IOS_MSL_DUMP"); return; }
+    const std::string dir = session + "/msl";
+    if (mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
+        say("msl dump: %s cannot be made: %s", dir.c_str(), strerror(errno));
+        env_drop(env, "SA2_IOS_MSL_DUMP");
+        return;
+    }
+    env_set(env, "SA2_IOS_MSL_DUMP", dir);
+    say("msl dump: on, into %s", dir.c_str());
+}
+
+// A gzip'd stream (the stream recorder's stream.sa2s.gz) unpacked to `out`; "" with the reason said.
+std::string gunzip_stream(const std::string& gz, const std::string& out) {
+    gzFile in = gzopen(gz.c_str(), "rb");
+    if (!in) { say("FAIL %s does not open", gz.c_str()); return ""; }
+    FILE* f = std::fopen(out.c_str(), "wb");
+    if (!f) { gzclose(in); say("FAIL %s cannot be written: %s", out.c_str(), strerror(errno)); return ""; }
+    std::vector<char> buf(1u << 20);
+    uint64_t total = 0;
+    int n = 0;
+    bool ok = true;
+    while ((n = gzread(in, buf.data(), unsigned(buf.size()))) > 0) {
+        if (std::fwrite(buf.data(), 1, size_t(n), f) != size_t(n)) { ok = false; break; }
+        total += uint64_t(n);
+    }
+    if (n < 0) ok = false;
+    gzclose(in);
+    if (std::fclose(f) != 0) ok = false;
+    if (!ok) { say("FAIL %s did not unpack", gz.c_str()); unlink(out.c_str()); return ""; }
+    say("stream: %s unpacked, %llu bytes", gz.c_str(), (unsigned long long)total);
+    return out;
+}
+
 // ---------------------------------------------------------------- the debug mode: a stream file
 
 int play_stream(const sa2ios_play_args& a, std::string& session) {
@@ -420,20 +459,48 @@ int play_stream(const sa2ios_play_args& a, std::string& session) {
         return 4;
     }
     say("mode stream %s", a.stream);
+    // The player's settings, and the renderer's switches (SA2_D3D9GPU_*) and the iOS diagnostics
+    // (SA2_IOS_*), from the settings and from game.env.extra.
+    auto stream_key = [](const std::string& k) {
+        return player_setting(k) || k.compare(0, 12, "SA2_D3D9GPU_") == 0 || k.compare(0, 8, "SA2_IOS_") == 0;
+    };
     EnvList env;
     for (int i = 0; i < a.setting_count; i++) {
         const std::string kv = a.settings[i];
         const size_t eq = kv.find('=');
-        if (eq != std::string::npos && player_setting(kv.substr(0, eq))) {
+        if (eq != std::string::npos && stream_key(kv.substr(0, eq))) {
             env_set(env, kv.substr(0, eq), kv.substr(eq + 1));
             say("settings: %s", kv.c_str());
         }
     }
+    {
+        EnvList extra;
+        if (read_settings(g_docs + "/game.env.extra", extra, nullptr))
+            for (const auto& kv : extra)
+                if (stream_key(kv.first)) {
+                    env_set(env, kv.first, kv.second);
+                    say("game.env.extra: %s=%s", kv.first.c_str(), kv.second.c_str());
+                }
+    }
+    std::string stream = a.stream;
+    if (stream.size() > 3 && stream.compare(stream.size() - 3, 3, ".gz") == 0) {
+        stream = gunzip_stream(stream, g_caches + "/stream.sa2s");
+        if (stream.empty()) { end_session(session); return 4; }
+    }
+    // SA2_IOS_SNAP=N[,N..]: those frames as PNGs in the session folder (the player's --snap).
+    std::string snaps;
+    if (const std::string* v = env_find(env, "SA2_IOS_SNAP"); v && !v->empty()) snaps = *v;
+    env_drop(env, "SA2_IOS_SNAP");
+    msl_dump_env(env, session);
     apply_environment(env);
     player_env(session);
     set_orientation(a.orientation ? a.orientation : "");
-    std::vector<std::string> args = {"sa2_player", a.stream, "--stage", "3", "--allow-truncated",
+    std::vector<std::string> args = {"sa2_player", stream, "--stage", "3", "--allow-truncated",
                                      "--report", session + "/player-report.runrec"};
+    if (!snaps.empty()) {
+        args.insert(args.end(), {"--snap", snaps, "--snap-dir", session});
+        say("snapshots: frames %s into the session folder", snaps.c_str());
+    }
     if (a.pace) args.push_back("--pace");
     if (a.audio) args.push_back("--audio");
     if (a.max_frames && *a.max_frames) {
@@ -593,6 +660,7 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
         }
 
     // The environment: the game's settings and the player's, in the one the app has.
+    msl_dump_env(genv, session);
     apply_environment(genv);
     player_env(session);
     set_orientation(a.orientation ? a.orientation : "");
