@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #if defined(SA2_HAVE_SHADERCROSS)
@@ -77,13 +78,20 @@ inline SDL_GPUShader* shader_from_spirv(SDL_GPUDevice* dev, const SDL_GPUShaderC
         info.shader_stage = ci.stage == SDL_GPU_SHADERSTAGE_VERTEX ? SDL_SHADERCROSS_SHADERSTAGE_VERTEX
                                                                    : SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT;
         info.props = props;
-        SDL_ShaderCross_GraphicsShaderResourceInfo ri{};
-        ri.num_samplers = ci.num_samplers;
-        ri.num_storage_textures = ci.num_storage_textures;
-        ri.num_storage_buffers = ci.num_storage_buffers;
-        ri.num_uniform_buffers = ci.num_uniform_buffers;
-        // SA2_IOS_MSL_DUMP (a directory; the iOS app's Debug switch sets it in the session): each module
-        // as converted, NNN_<stage>_s<samplers>_u<uniform buffers>.metal, beside its SPIR-V (.spv).
+        // The module is converted to MSL here and made by SDL with the caller's resource counts. SDL_shadercross's
+        // own CompileGraphicsShaderFromSPIRV counts the resources by reflection instead, so a shader that uses
+        // uniform slots 1 and 3 of its four (the translator's vertex shaders: the constants and the state) is
+        // made with two, SDL's Metal backend binds only buffers 0 and 1, and slot 3 reads whatever buffer was
+        // left there (GitHub issue #2: Chao World's palette lighting). The MSL keeps each SPIR-V binding as its
+        // Metal index (SDL_shadercross's rule, which is SDL's slot), and SPIRV-Cross names the entry main0.
+        void* msl = SDL_ShaderCross_TranspileMSLFromSPIRV(&info);
+        if (!msl) {
+            if (why) *why = std::string("SDL_ShaderCross_TranspileMSLFromSPIRV (MSL ") + kMslVersion + "): " + SDL_GetError();
+            if (props) SDL_DestroyProperties(props);
+            return nullptr;
+        }
+        // SA2_IOS_MSL_DUMP (a directory; the iOS app's Debug switch sets it in the session): each module and
+        // the MSL made from it, NNN_<stage>_s<samplers>_u<uniform buffers>.spv and .metal.
         if (const char* dir = std::getenv("SA2_IOS_MSL_DUMP"); dir && *dir) {
             static std::atomic<int> dumped{0};
             const int n = dumped++;
@@ -94,17 +102,19 @@ inline SDL_GPUShader* shader_from_spirv(SDL_GPUDevice* dev, const SDL_GPUShaderC
                 std::fwrite(ci.code, 1, ci.code_size, fs);
                 std::fclose(fs);
             }
-            if (void* msl = SDL_ShaderCross_TranspileMSLFromSPIRV(&info)) {
-                if (FILE* fm = std::fopen((std::string(base) + ".metal").c_str(), "wb")) {
-                    std::fputs(static_cast<const char*>(msl), fm);
-                    std::fclose(fm);
-                }
-                SDL_free(msl);
+            if (FILE* fm = std::fopen((std::string(base) + ".metal").c_str(), "wb")) {
+                std::fputs(static_cast<const char*>(msl), fm);
+                std::fclose(fm);
             }
         }
-        SDL_GPUShader* s = SDL_ShaderCross_CompileGraphicsShaderFromSPIRV(dev, &info, &ri, 0);
-        if (!s && why) *why = std::string("SDL_ShaderCross_CompileGraphicsShaderFromSPIRV (MSL ") + kMslVersion +
-                              "): " + SDL_GetError();
+        SDL_GPUShaderCreateInfo mci = ci;
+        mci.code = static_cast<const Uint8*>(msl);
+        mci.code_size = std::strlen(static_cast<const char*>(msl));
+        mci.entrypoint = "main0";
+        mci.format = SDL_GPU_SHADERFORMAT_MSL;
+        SDL_GPUShader* s = SDL_CreateGPUShader(dev, &mci);
+        if (!s && why) *why = std::string("SDL_CreateGPUShader (MSL ") + kMslVersion + "): " + SDL_GetError();
+        SDL_free(msl);
         if (props) SDL_DestroyProperties(props);
         return s;
     }
