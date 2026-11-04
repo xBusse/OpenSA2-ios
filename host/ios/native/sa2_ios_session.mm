@@ -420,6 +420,23 @@ void msl_dump_env(EnvList& env, const std::string& session) {
     say("msl dump: on, into %s", dir.c_str());
 }
 
+// SA2_IOS_METAL_VALIDATION=1: Metal's API validation and shader validation (out-of-bounds buffer and
+// texture reads in shaders), switched on through Metal's own environment variables before the player
+// makes its device; errors are logged, not raised. Slow: a diagnostic.
+void metal_validation_env(EnvList& env) {
+    const std::string* v = env_find(env, "SA2_IOS_METAL_VALIDATION");
+    const bool on = v && *v == "1";
+    env_drop(env, "SA2_IOS_METAL_VALIDATION");
+    if (!on) return;
+    for (const char* kv : {"MTL_DEBUG_LAYER=1", "MTL_DEBUG_LAYER_ERROR_MODE=nslog", "MTL_DEBUG_LAYER_WARNING_MODE=nslog",
+                           "MTL_SHADER_VALIDATION=1", "MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1"}) {
+        const std::string s(kv);
+        const size_t eq = s.find('=');
+        setenv(s.substr(0, eq).c_str(), s.substr(eq + 1).c_str(), 1);
+    }
+    say("metal validation: on (MTL_DEBUG_LAYER, MTL_SHADER_VALIDATION)");
+}
+
 // A gzip'd stream (the stream recorder's stream.sa2s.gz) unpacked to `out`; "" with the reason said.
 std::string gunzip_stream(const std::string& gz, const std::string& out) {
     gzFile in = gzopen(gz.c_str(), "rb");
@@ -501,6 +518,7 @@ int play_stream(const sa2ios_play_args& a, std::string& session) {
     // A replay draws as the live game does on Metal: clip-only depth (d9g_gpu_sdl.cpp make_metal_gpu).
     env_set(env, "SA2_D3D9GPU_CLIP_ONLY", "1");
     msl_dump_env(env, session);
+    metal_validation_env(env);
     apply_environment(env);
     player_env(session);
     set_orientation(a.orientation ? a.orientation : "");
@@ -672,6 +690,7 @@ int play_game(const sa2ios_play_args& a, std::string& session) {
 
     // The environment: the game's settings and the player's, in the one the app has.
     msl_dump_env(genv, session);
+    metal_validation_env(genv);
     apply_environment(genv);
     player_env(session);
     set_orientation(a.orientation ? a.orientation : "");
