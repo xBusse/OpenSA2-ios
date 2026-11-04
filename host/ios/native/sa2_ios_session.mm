@@ -498,6 +498,8 @@ int play_stream(const sa2ios_play_args& a, std::string& session) {
     std::string snaps;
     if (const std::string* v = env_find(env, "SA2_IOS_SNAP"); v && !v->empty()) snaps = *v;
     env_drop(env, "SA2_IOS_SNAP");
+    // A replay draws as the live game does on Metal: clip-only depth (d9g_gpu_sdl.cpp make_metal_gpu).
+    env_set(env, "SA2_D3D9GPU_CLIP_ONLY", "1");
     msl_dump_env(env, session);
     apply_environment(env);
     player_env(session);
@@ -508,8 +510,10 @@ int play_stream(const sa2ios_play_args& a, std::string& session) {
         args.insert(args.end(), {"--snap", snaps, "--snap-dir", session});
         say("snapshots: frames %s into the session folder", snaps.c_str());
     }
-    if (a.pace) args.push_back("--pace");
-    if (a.audio) args.push_back("--audio");
+    // With snapshots, a replay as fast as it goes and without sound: a live recording carries no
+    // audio store hashes for the player's sound checks, and pacing only slows the snapshots.
+    if (a.pace && snaps.empty()) args.push_back("--pace");
+    if (a.audio && snaps.empty()) args.push_back("--audio");
     if (a.max_frames && *a.max_frames) {
         args.push_back("--max-frames");
         args.push_back(a.max_frames);

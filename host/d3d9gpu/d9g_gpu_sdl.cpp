@@ -1865,7 +1865,11 @@ static std::unique_ptr<Gpu> make_metal_gpu(bool debug, const CapsOff& off, std::
     info.vk11 = true;
     info.vk11_reason = "the Metal device: the conservative SPIR-V 1.3 profile, converted to MSL";
     info.live_session = SDL_GetBooleanProperty(SDL_GetGlobalProperties(), kLiveSessionProperty, false);
-    info.depth_clamp_clip_only = !info.depth_clip_and_clamp && info.live_session;
+    // SA2_D3D9GPU_CLIP_ONLY=1: the clip-only draws a live session takes, in a replay too (the iOS app's
+    // stream mode sets it, so a recorded stream draws as the live game drew it).
+    const char* clip_only = std::getenv("SA2_D3D9GPU_CLIP_ONLY");
+    const bool clip_only_asked = clip_only && std::strcmp(clip_only, "1") == 0;
+    info.depth_clamp_clip_only = !info.depth_clip_and_clamp && (info.live_session || clip_only_asked);
     if (!info.depth_clip_and_clamp)
         std::fprintf(stderr, "d3d9gpu: no depth clip and clamp (Metal clips or clamps, never both): %s\n",
                      info.depth_clamp_clip_only ? "the draws are clipped at the near and far planes without the clamp"
