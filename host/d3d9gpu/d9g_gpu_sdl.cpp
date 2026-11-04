@@ -6,6 +6,7 @@
 #include "d9g.h"
 #include "d9g_props.h"
 #include "tweaks/tex-filter.h"
+#include "sa2_gpu_shader.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -35,6 +36,11 @@ namespace d9g {
 namespace {
 
 constexpr uint32_t kRing = 64u << 20;
+// On Metal the ring is kMetalRings buffers the backend picks between itself (stage): SDL's Metal
+// backend marks a buffer idle only when a later submit cleans the command buffer that read it, not
+// when its fence is waited, so a ring mapped with SDL's cycle flag kept getting a new 64 MiB buffer
+// that SDL never gave back, and the app's footprint grew by gigabytes until iOS ended it.
+constexpr uint32_t kMetalRings = 4;
 
 SDL_GPUTextureFormat sdl_format(GFmt f) {
     switch (f) {
@@ -109,6 +115,16 @@ public:
                 info_.bc_unsupported += std::string(info_.bc_unsupported.empty() ? "" : ", ") + gfmt_name(f);
         SDL_GPUTransferBufferCreateInfo ri{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, kRing, 0};
         ring_ = SDL_CreateGPUTransferBuffer(dev, &ri);
+        // SA2_D3D9GPU_METAL_RING=0 (a diagnostic): SDL's own cycle on Metal as elsewhere; the app's
+        // footprint grows without the ring, so only for a short run.
+        const char* metal_ring = std::getenv("SA2_D3D9GPU_METAL_RING");
+        const bool ring_off = metal_ring && std::strcmp(metal_ring, "0") == 0;
+        if (info_.driver == "metal" && ring_off)
+            std::fprintf(stderr, "d3d9gpu: SA2_D3D9GPU_METAL_RING=0: the transfer ring cycles through SDL, as on Vulkan\n");
+        if (info_.driver == "metal" && ring_ && !ring_off) {
+            rings_[0] = ring_;
+            for (uint32_t i = 1; i < kMetalRings; ++i) rings_[i] = SDL_CreateGPUTransferBuffer(dev, &ri);
+        }
     }
 
     ~SdlGpu() override {
@@ -121,7 +137,12 @@ public:
                 for (const PipelineEntry& e : bucket) SDL_ReleaseGPUGraphicsPipeline(dev_, e.pipeline);
         for (auto& [key, sampler] : samplers_) SDL_ReleaseGPUSampler(dev_, sampler);
         for (auto& [key, object] : shaders_) SDL_ReleaseGPUShader(dev_, object->shader);
-        if (ring_) SDL_ReleaseGPUTransferBuffer(dev_, ring_);
+        if (rings_[0]) {
+            for (SDL_GPUTransferBuffer* r : rings_)
+                if (r) SDL_ReleaseGPUTransferBuffer(dev_, r);
+        } else if (ring_) {
+            SDL_ReleaseGPUTransferBuffer(dev_, ring_);
+        }
         if (down_) SDL_ReleaseGPUTransferBuffer(dev_, down_);
         if (surface_gone_) {
             // SDL_ReleaseWindowFromGPUDevice, and SDL_DestroyGPUDevice through it, would destroy the
@@ -999,8 +1020,10 @@ private:
         ci.stage = stage == shader::Stage::Vertex ? SDL_GPU_SHADERSTAGE_VERTEX : SDL_GPU_SHADERSTAGE_FRAGMENT;
         ci.num_samplers = b.num_samplers; ci.num_uniform_buffers = b.num_uniform_buffers;
         auto object = std::make_unique<ShaderObject>(ShaderObject{nullptr});
-        SDL_GPUShader* s = SDL_CreateGPUShader(dev_, &ci);
-        if (!s) { err_ = std::string("SDL_CreateGPUShader: ") + SDL_GetError(); return nullptr; }
+        // SPIR-V, or MSL converted from it on a Metal device (host/player/sa2_gpu_shader.h).
+        std::string why;
+        SDL_GPUShader* s = sa2_gpu::shader_from_spirv(dev_, ci, &why);
+        if (!s) { err_ = why; return nullptr; }
         object->shader = s;
         ShaderObject* result = object.get();
         try { shaders_.emplace(std::move(key), std::move(object)); }
@@ -1030,6 +1053,34 @@ private:
         if (!props.error().empty()) { err_ = props.error(); return nullptr; }
         auto ci = desc.create_info(props.id());
         ci.vertex_shader = program.vertex->shader; ci.fragment_shader = program.pixel->shader;
+        // Metal's vertex layouts (MTLVertexDescriptor) abort the app, not the call, on a layout it
+        // does not take: a stride of 0 at a per-instance rate, a stride or an attribute offset that is
+        // not a multiple of 4. The null stream (d9g_pipeline.cpp, DXVK's dummy binding: pitch 0, per
+        // instance) takes pitch 16 there, the zero FLOAT4 it reads: the semantic-null buffer holds at
+        // least that (draw's filler check), and with one instance a draw every vertex reads its
+        // first 16 bytes, as at pitch 0. Any other such layout refuses this draw by name.
+        SDL_GPUVertexBufferDescription metal_vbs[std::extent_v<decltype(PipelineDesc::vbs)>];
+        if (info_.driver == "metal" && ci.vertex_input_state.num_vertex_buffers) {
+            const uint32_t nv = ci.vertex_input_state.num_vertex_buffers;
+            for (uint32_t i = 0; i < nv && i < std::size(metal_vbs); ++i) {
+                metal_vbs[i] = ci.vertex_input_state.vertex_buffer_descriptions[i];
+                if (metal_vbs[i].slot == kNullStreamSlot && metal_vbs[i].pitch == 0) metal_vbs[i].pitch = 16;
+                if (metal_vbs[i].pitch == 0 || metal_vbs[i].pitch % 4) {
+                    err_ = "Metal takes no vertex stride of " + std::to_string(metal_vbs[i].pitch) + " (slot " +
+                           std::to_string(metal_vbs[i].slot) + "): a nonzero multiple of 4";
+                    return nullptr;
+                }
+            }
+            for (uint32_t i = 0; i < ci.vertex_input_state.num_vertex_attributes; ++i) {
+                const auto& a = ci.vertex_input_state.vertex_attributes[i];
+                if (a.offset % 4) {
+                    err_ = "Metal takes no vertex attribute offset of " + std::to_string(a.offset) + " (location " +
+                           std::to_string(a.location) + "): a multiple of 4";
+                    return nullptr;
+                }
+            }
+            ci.vertex_input_state.vertex_buffer_descriptions = metal_vbs;
+        }
         SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(dev_, &ci);
         if (!pipeline) { err_ = std::string("SDL_CreateGPUGraphicsPipeline: ") + SDL_GetError(); return nullptr; }
         try { bucket.push_back(PipelineEntry{std::vector<uint8_t>(key, key + n), pipeline}); }
@@ -1392,8 +1443,29 @@ private:
             if (!encode_call("SDL_UnmapGPUTransferBuffer(ring)", [&] { SDL_UnmapGPUTransferBuffer(dev_, ring_); })) return false;
         }
         if (!ring_map_) {
+            // Metal: a ring buffer no submit still to complete has read, mapped without SDL's cycle;
+            // when every one is still read, the oldest submit is waited for; when all of them are this
+            // command buffer's, SDL's cycle as elsewhere.
+            bool cycle = true;
+            if (rings_[0]) {
+                const uint64_t now = c_.submits + 1;   // the submit this command buffer will be
+                for (int attempt = 0; attempt < 2 && cycle; ++attempt) {
+                    for (uint32_t k = 1; k <= kMetalRings; ++k) {
+                        const uint32_t i = (ring_at_ + k) % kMetalRings;
+                        if (rings_[i] && ring_use_[i] <= done_) {
+                            ring_at_ = i;
+                            ring_ = rings_[i];
+                            ring_use_[i] = now;
+                            cycle = false;
+                            break;
+                        }
+                    }
+                    if (cycle && attempt == 0 && !wait_oldest()) return false;
+                }
+                if (cycle) ring_use_[ring_at_] = now;
+            }
             if (!encode_call("SDL_MapGPUTransferBuffer(ring)", [&] {
-                    ring_map_ = static_cast<uint8_t*>(SDL_MapGPUTransferBuffer(dev_, ring_, true));
+                    ring_map_ = static_cast<uint8_t*>(SDL_MapGPUTransferBuffer(dev_, ring_, cycle));
                 })) return false;
             if (!ring_map_) { err_ = std::string("SDL_MapGPUTransferBuffer: ") + SDL_GetError(); return false; }
             ring_off_ = 0;
@@ -1411,6 +1483,20 @@ private:
     void release_pending_fences() {
         for (uint32_t i = 0; i < pending_count_; ++i) SDL_ReleaseGPUFence(dev_, pending_[i]);
         pending_count_ = 0;
+    }
+    // The oldest submit still pending, waited for: done_ moves to it. True with nothing pending.
+    bool wait_oldest() {
+        if (!pending_count_) return true;
+        SDL_ClearError();
+        const bool ready = SDL_WaitForGPUFences(dev_, true, pending_.data(), 1);
+        c_.waits++;
+        if (!check_encoding_error("SDL_WaitForGPUFences(ring)")) return false;
+        if (!ready) { err_ = "SDL_WaitForGPUFences(ring) failed"; discard_failed_commands(); return false; }
+        done_ = std::max<uint64_t>(done_, c_.submits - pending_count_ + 1);
+        SDL_ReleaseGPUFence(dev_, pending_[0]);
+        for (uint32_t i = 1; i < pending_count_; ++i) pending_[i - 1] = pending_[i];
+        --pending_count_;
+        return true;
     }
     bool submit(bool wait) {
         if (!end_render() || !end_copy()) return false;
@@ -1432,6 +1518,7 @@ private:
                 discard_failed_commands();
                 return false;
             }
+            done_ = std::max<uint64_t>(done_, c_.submits - pending_count_ + 1);
             SDL_ReleaseGPUFence(dev_, pending_[0]);
             pending_[0] = pending_[1];
             --pending_count_;
@@ -1451,7 +1538,10 @@ private:
         const bool ok = SDL_WaitForGPUFences(dev_, true, &f, 1);
         const bool no_error = check_encoding_error("SDL_WaitForGPUFences");
         // All earlier submissions on SDL's graphics queue completed before this fence.
-        if (ok && no_error) release_pending_fences();
+        if (ok && no_error) {
+            release_pending_fences();
+            done_ = c_.submits;
+        }
         c_.waits++;
         if (!ok && no_error) { err_ = "SDL_WaitForGPUFences failed"; discard_failed_commands(); }
         return ok && no_error;
@@ -1510,6 +1600,12 @@ private:
     } bound_;
     std::vector<UpCopy> up_copies_;
     SDL_GPUTransferBuffer* ring_ = nullptr;
+    // Metal's ring (stage): kMetalRings transfer buffers of kRing bytes, each with the submit that
+    // last read it (ring_use_), and the last submit known complete (done_).
+    std::array<SDL_GPUTransferBuffer*, kMetalRings> rings_{};
+    std::array<uint64_t, kMetalRings> ring_use_{};
+    uint32_t ring_at_ = 0;
+    uint64_t done_ = 0;
     SDL_GPUTransferBuffer* dedicated_ = nullptr;
     uint8_t* ring_map_ = nullptr;
     uint32_t ring_off_ = 0;
@@ -1705,6 +1801,98 @@ constexpr const char kLiveSessionProperty[] = "sa2.live_session";
 
 }  // namespace
 
+#if defined(__APPLE__) && defined(SA2_HAVE_SHADERCROSS)
+// The Metal device (the iOS app, host/ios): SDL_gpu has no Vulkan driver there, so the device is its
+// Metal one, made to take MSL, and every SPIR-V module the translator builds is converted to MSL as it
+// is made (host/player/sa2_gpu_shader.h, SDL_shadercross). There is no Vulkan device to read DXVK's
+// facts from (query_device_facts), so the translator is given the most conservative profile it has,
+// the one a driver offering only Vulkan 1.1 takes (ShaderProfile::vk11: SPIR-V 1.3, the GLSL450 memory
+// model, OpKill for demote, the state read as 32-bit words, no float controls, no 16-bit arithmetic),
+// with no vendor rule (driver ID 0) and no ClipDistance output (ShaderProfile::no_clip_distance: SA2
+// enables no user clip plane, and a draw that did is refused by name): the least SPIRV-Cross's MSL
+// backend has to understand. The SDL patch (patches/sdl3) reports no depth clip with clamp on Metal,
+// so a live session's clip-only draws apply, as on a stock SDL; border addressing is reported where
+// the GPU has Metal's border colour (the iOS build's SDL edit, tools/s9/ios_app.py: Apple7, A14, and
+// later), and older GPUs take the shader fallback. The BC formats and D24S8 are asked of the device as on Vulkan (SdlGpu's constructor):
+// where it has none, DXT textures are decoded on the CPU and depth is D32_FLOAT_S8_UINT.
+static std::unique_ptr<Gpu> make_metal_gpu(bool debug, const CapsOff& off, std::string* err) {
+    const char* bc_prop = nullptr;
+    const bool bc_forced_off = test_switch("SA2_D3D9GPU_NO_BC", "debug.sa2.no_bc", &bc_prop);
+    if (bc_forced_off)
+        std::fprintf(stderr, "d3d9gpu: SA2_D3D9GPU_NO_BC=1: no BC format is sampled; DXT textures are decoded to BGRA8 "
+                             "on the CPU\n");
+    Report& r = report();
+    const SDL_PropertiesID props = SDL_CreateProperties();
+    if (!props) {
+        *err = std::string("SDL_CreateProperties: ") + SDL_GetError();
+        return nullptr;
+    }
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, debug);
+    SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, "metal");
+    r.x87_before = x87_cw();
+    r.mxcsr_before = mxcsr();
+    SDL_GPUDevice* dev = SDL_CreateGPUDeviceWithProperties(props);
+    r.x87_after = x87_cw();
+    r.mxcsr_after = mxcsr();
+    r.fpu_measured = true;
+    SDL_DestroyProperties(props);
+    if (!dev) {
+        *err = std::string("SDL_CreateGPUDeviceWithProperties (Metal, MSL): ") + SDL_GetError();
+        return nullptr;
+    }
+    auto gpu = std::make_unique<SdlGpu>(dev, debug, off);
+    GpuInfo& info = const_cast<GpuInfo&>(gpu->info());
+    if (info.sdl_patched != info.sdl_capabilities_present) {
+        *err = "the SDL3 linked (" + info.sdl_revision + ") is " + (info.sdl_patched ? "marked as patched" : "not marked as patched") +
+               " but " + (info.sdl_capabilities_present ? "reports" : "does not report") +
+               " the patch's device properties (patches/sdl3)";
+        return nullptr;
+    }
+    // No Vulkan query: the values a Metal device has, named as such. Metal's largest point is 511 pixels.
+    info.vk_query_ok = true;
+    info.vk_query = "Metal: no Vulkan device; fixed values";
+    info.vk_point_size_max = 511.0f;
+    info.vulkan_options = "none (Metal; SPIR-V converted to MSL " + std::string(sa2_gpu::kMslVersion) +
+                          " by SDL_shadercross)";
+    info.sub_dword_access = false;
+    info.clip_distance = false;
+    info.clip_distance_forced_off = false;
+    info.bc_forced_off = bc_forced_off;
+    info.sdl_features_dropped = "";
+    info.sampler_anisotropy = true;
+    info.depth_clamp_forced_off = false;
+    info.vk11 = true;
+    info.vk11_reason = "the Metal device: the conservative SPIR-V 1.3 profile, converted to MSL";
+    info.live_session = SDL_GetBooleanProperty(SDL_GetGlobalProperties(), kLiveSessionProperty, false);
+    // SA2_D3D9GPU_CLIP_ONLY=1: the clip-only draws a live session takes, in a replay too (the iOS app's
+    // stream mode sets it, so a recorded stream draws as the live game drew it).
+    const char* clip_only = std::getenv("SA2_D3D9GPU_CLIP_ONLY");
+    const bool clip_only_asked = clip_only && std::strcmp(clip_only, "1") == 0;
+    info.depth_clamp_clip_only = !info.depth_clip_and_clamp && (info.live_session || clip_only_asked);
+    if (!info.depth_clip_and_clamp)
+        std::fprintf(stderr, "d3d9gpu: no depth clip and clamp (Metal clips or clamps, never both): %s\n",
+                     info.depth_clamp_clip_only ? "the draws are clipped at the near and far planes without the clamp"
+                                                : "outside a live session each draw is refused (DEPTH_CLAMP_FALLBACK_OWED)");
+    shader::DeviceFacts& f = info.shader_facts;
+    f = shader::DeviceFacts{};
+    f.driver_id = 0;                                   // no DXVK driver rule names Apple's
+    f.driver_version_raw = 0;
+    f.min_storage_buffer_offset_alignment = 16;        // Apple GPUs need 4; 16 is every GPU's
+    f.max_uniform_buffer_range = 65536;
+    f.max_per_stage_descriptor_uniform_buffers = 1000000;   // no DXVK limit (the CPU model's value)
+    f.r32_storage_read_without_format = false;
+    f.sub_dword_access = false;
+    f.clip_distance = false;
+    f.vk11 = true;
+    info.shader_facts_ok = true;
+    info.shader_facts_query = "Metal: the conservative Vulkan 1.1 facts (no Vulkan device to read)";
+    std::fprintf(stderr, "d3d9gpu: Metal device %s; shaders are SPIR-V 1.3 converted to MSL %s (SDL_shadercross)\n",
+                 info.device_name.c_str(), sa2_gpu::kMslVersion);
+    return gpu;
+}
+#endif
+
 // SDL_CreateGPUDeviceWithProperties with the Vulkan driver named (the critic's A26), SPIR-V as the
 // only shader format, and SDL_GPUVulkanOptions asking for Vulkan 1.3 and the features the
 // translated modules need (R1, shader::VulkanFeatures: R0's chain and what the validation layer
@@ -1750,6 +1938,9 @@ constexpr const char kLiveSessionProperty[] = "sa2.live_session";
 // on any device. The choice is shader::next_device_request's; each step down is said once on stderr and
 // recorded (GpuInfo::vk11, vk11_reason, vk11_forced).
 std::unique_ptr<Gpu> make_sdl_gpu(bool debug, const CapsOff& off, std::string* err) {
+#if defined(__APPLE__) && defined(SA2_HAVE_SHADERCROSS)
+    return make_metal_gpu(debug, off, err);
+#endif
     const char* clip_prop = nullptr;
     const bool clip_forced_off = test_switch("SA2_D3D9GPU_NO_CLIPDIST", "debug.sa2.no_clipdist", &clip_prop);
     if (clip_forced_off)

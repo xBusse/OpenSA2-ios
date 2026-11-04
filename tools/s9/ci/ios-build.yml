@@ -1,0 +1,146 @@
+# The whole iOS build on GitHub's runners, with no computer of your own: Windows unpacks your
+# executable, Linux translates the game (tools/s9/ios_inputs.py), macOS links it and builds the .ipa
+# (tools/s9/ios_mac.sh). docs/ios.md ("Build it in the cloud") says how to set it up.
+#
+# This file goes in a PRIVATE repository of yours, as .github/workflows/ios-build.yml, next to a
+# release tagged `game` that holds your Steam copy's sonic2app.exe as an asset (or with the file
+# committed as game/sonic2app.exe). It is not a workflow
+# of the source repository: the executable and the translated game must stay private, and every
+# artifact below lives only in the private repository (the intermediate ones for a day). The .ipa
+# it makes is what you publish, as upstream publishes its Windows, Android and Linux builds.
+#
+# Run it from the private repository's Actions tab (Run workflow). A run takes about three and a
+# half hours, nearly all of it the Linux job.
+name: SA2 iOS build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: The source repository (public)
+        default: xBusse/OpenSA2-ios
+      source_ref:
+        description: Its branch, tag or commit
+        default: ios-port
+      release:
+        description: Attach the .ipa to a new release of this repository
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    name: Unpack the executable (Windows, Steamless)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: self
+      - name: Your sonic2app.exe (this repository's release "game", or its file game/sonic2app.exe)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p exe
+          if gh release download game --repo "$GITHUB_REPOSITORY" --pattern sonic2app.exe --dir exe 2>/dev/null; then
+            echo "from the release game"
+          elif [ -f self/game/sonic2app.exe ]; then
+            cp self/game/sonic2app.exe exe/ && echo "from game/sonic2app.exe"
+          else
+            echo "::error::no sonic2app.exe: add it to a release tagged game, or commit it as game/sonic2app.exe"; exit 1
+          fi
+          sha256sum exe/sonic2app.exe
+      - name: Steamless 3.1.0.5
+        shell: bash
+        run: |
+          curl -fsSL --retry 3 -o steamless.zip "https://github.com/atom0s/Steamless/releases/download/v3.1.0.5/Steamless.v3.1.0.5.-.by.atom0s.zip"
+          echo "e3e2d22e098ff3fb359b2876aa2bed9596f0501e6ff588cbffae90a76d2dc4f5  steamless.zip" | sha256sum -c -
+          7z x -osteamless steamless.zip > /dev/null
+      - name: Unpack (its default options)
+        shell: cmd
+        run: steamless\Steamless.CLI.exe --quiet exe\sonic2app.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exe
+          path: exe/
+          retention-days: 1
+          if-no-files-found: error
+
+  inputs:
+    name: Translate the game (Linux)
+    needs: unpack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Room on the disk, and user namespaces (the lifters run Remill under unshare)
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          unshare -Urm true && echo "user namespaces on"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repo }}
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Packages
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang-20 llvm-20 unzip xz-utils
+      - name: Python environment
+        run: python -m venv .venv && .venv/bin/python -m pip install -q -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: exe
+          path: exe-in
+      - name: The Linux half (tools/s9/ios_inputs.py all)
+        run: >
+          .venv/bin/python tools/s9/ios_inputs.py all
+          --exe exe-in/sonic2app.exe --unpacked exe-in/sonic2app.exe.unpacked.exe
+          --prune --jobs "$(nproc)" --out mac-inputs.tar.xz
+      - name: The logs, if it stopped
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-logs
+          path: private/logs/
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-inputs
+          path: mac-inputs.tar.xz
+          retention-days: 1
+          compression-level: 0
+
+  ipa:
+    name: Build the .ipa (macOS)
+    needs: inputs
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repo }}
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac-inputs
+      - name: The Mac half (tools/s9/ios_mac.sh)
+        run: bash tools/s9/ios_mac.sh mac-inputs.tar.xz --install-deps --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SA2Recomp-ipa
+          path: dist/SA2Recomp.ipa
+          retention-days: 30
+      - name: Release
+        if: ${{ inputs.release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          src="$(git rev-parse --short HEAD)"
+          tag="ios-$(date -u +%Y%m%d-%H%M)-$src"
+          gh release create "$tag" dist/SA2Recomp.ipa --repo "$GITHUB_REPOSITORY" --prerelease \
+            --title "SA2 Recompiled for iOS ($src)" \
+            --notes "Built from ${{ inputs.source_repo }}@$src by the SA2 iOS build workflow. Unsigned: sign and install it with AltStore, SideStore or another sideloading tool."

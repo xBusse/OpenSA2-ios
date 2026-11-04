@@ -1172,6 +1172,15 @@ static void *thread_body(void *arg) {
     sigaddset(&s, SIGALRM);
     pthread_sigmask(SIG_BLOCK, &s, NULL);
 #endif      /* Windows: no SIGALRM; sa2_call's bound is the thread that armed it (sa2_trap.c) */
+#if defined(__APPLE__)
+    /* Named for the iOS app's sampler (host/ios/native/sa2_ios_prof.h), which tells the guest's
+     * threads from the app's by name; Darwin names only the calling thread. */
+    {
+        char name[32];
+        snprintf(name, sizeof name, "sa2-guest-%d", t->index);
+        pthread_setname_np(name);
+    }
+#endif
     sa2_trap_thread_init();
     t->host_tid = host_tid_now();
     (void)guest_cpus_apply(t->index, t->start_va);
@@ -1350,6 +1359,13 @@ int sa2_sched_spawn(uint32_t start_va, uint32_t param, int suspended, const char
      * too little for a call chain that reached 14 624 imports on the main
      * thread's 8 MiB. */
     pthread_attr_setstacksize(&attr, 64u << 20);
+#if defined(__APPLE__)
+    /* The guest runs one thread at a time and every hand-off waits for the next one to be scheduled,
+     * so each guest thread asks for the class the game's own thread has (host/ios/native/
+     * sa2_ios_game.c): one left at Darwin's default may be put on an efficiency core, or wait behind
+     * the app's other work, at every hand-off. Where it runs, never what it computes. */
+    pthread_attr_set_qos_class_np(&attr, QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
     int rc = pthread_create(&t->host, &attr, thread_body, t);
     pthread_attr_destroy(&attr);
     if (rc != 0) {

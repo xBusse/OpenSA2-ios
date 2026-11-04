@@ -548,10 +548,18 @@ class Objects:
 
 
 def defined_globals(obj: Path) -> list[str]:
-    p = subprocess.run(["nm", "-g", "--defined-only", str(obj)], capture_output=True, text=True)
+    # SA2_NM names another nm: GNU nm reads no Mach-O object, so a build of the iOS objects on Linux
+    # (tools/s9/ios_game.py) runs with SA2_NM=llvm-nm (macOS's own nm reads them).
+    p = subprocess.run([os.environ.get("SA2_NM") or "nm", "-g", "--defined-only", str(obj)],
+                       capture_output=True, text=True)
     if p.returncode:
         raise Refused(f"nm {obj}: {p.stderr.strip()[:200]}")
-    return sorted(line.split()[-1] for line in p.stdout.splitlines() if line.strip())
+    names = [line.split()[-1] for line in p.stdout.splitlines() if line.strip()]
+    # A Mach-O object (64-bit magic 0xfeedfacf) spells every C symbol with a leading underscore: the
+    # names are compared as C names, as an ELF object spells them.
+    if obj.read_bytes()[:4] == b"\xcf\xfa\xed\xfe":
+        names = [n[1:] if n.startswith("_") else n for n in names]
+    return sorted(names)
 
 
 def build_module(w: World, t: Tweak, row: dict, m: Module, objs: Objects, out: Path) -> dict:

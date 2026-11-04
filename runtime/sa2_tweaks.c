@@ -203,9 +203,13 @@ int sa2_tweak_patch_on(unsigned row) {
     return row < g_npatch && (g_tweaks & g_patch_bit[row]) != 0;
 }
 
-__attribute__((constructor)) static void sa2_tweaks_read(void) {
+void sa2_tweaks_read_env(void) {
     char line[16384];
     const int replay = getenv("SA2_REPLAY_TICKS") != NULL || getenv("SA2_REPLAY_WORDS") != NULL;
     g_tweaks = sa2_tweaks_parse(getenv("SA2_TWEAKS"), replay, line, sizeof line);
     if (line[0]) fprintf(stderr, "%s\n", line);
+}
+
+__attribute__((constructor)) static void sa2_tweaks_read(void) {
+    sa2_tweaks_read_env();
 }

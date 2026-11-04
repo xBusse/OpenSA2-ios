@@ -8,7 +8,7 @@ OpenSA2 is an experimental native port of the 2012 PC release of *Sonic Adventur
 
 The aim is to preserve the game's original logic while making that logic run on new platforms. Linux and Windows builds have reached live gameplay. Android builds have run on real devices with touch input, and external-controller support is implemented. Work continues on game coverage and platform behavior.
 
-[Download and play](docs/downloads.md) · [Architecture](docs/architecture.md) · [Current status](docs/status.md) · [Contribute](CONTRIBUTING.md)
+[Download and play](docs/downloads.md) · [Architecture](docs/architecture.md) · [Current status](docs/status.md) · [iOS](docs/ios.md) · [Contribute](CONTRIBUTING.md)
 
 ## Download the experimental builds
 
@@ -51,6 +51,7 @@ This source repository includes no game executable, assets, or translated game c
 | Android, arm64 | Experimental builds tested on a Galaxy S25 Edge and a Pixel 9 Pro. Touch and external controllers are implemented. |
 | Linux, arm64 | Cross-build and replay work under QEMU. General native-device support is unverified. |
 | macOS | Future work. No supported build or compatibility promise. |
+| iOS and iPadOS, arm64 | Port in source ([iOS guide](docs/ios.md)): the game on a thread of the app, Metal rendering, touch controls. Built on a Mac; not yet verified on a device. |
 
 These are development results, not a claim of full-game parity. Broad stage, boss, and event coverage remains unfinished. See the [status page](docs/status.md) before testing.
 

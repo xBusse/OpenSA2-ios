@@ -1,6 +1,9 @@
 // sa2_platform_posix.cpp: sa2_platform.h for Linux and other POSIX hosts.
 #ifndef _WIN32
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #include "sa2_platform.h"
 
 #include <dirent.h>
@@ -31,7 +34,12 @@ bool stat_path(const std::string& path, Stat& out) {
     out.is_dir = S_ISDIR(st.st_mode);
     out.is_file = S_ISREG(st.st_mode);
     out.size = uint64_t(st.st_size);
+#if defined(__APPLE__)
+    // Darwin names the modification time st_mtimespec.
+    out.mtime_ns = int64_t(st.st_mtimespec.tv_sec) * 1000000000LL + st.st_mtimespec.tv_nsec;
+#else
     out.mtime_ns = int64_t(st.st_mtim.tv_sec) * 1000000000LL + st.st_mtim.tv_nsec;
+#endif
     return true;
 }
 
@@ -206,6 +214,8 @@ double monotonic_seconds() {
 std::string os_name() {
 #if defined(__linux__)
     return "linux";
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+    return "ios";
 #elif defined(__APPLE__)
     return "macos";
 #else

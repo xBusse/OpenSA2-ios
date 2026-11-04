@@ -1910,8 +1910,17 @@ bool Player::validate_host_files() {
         return found != files_.end() && !found->second.sha256.empty() && found->second.sha256 == expected;
     };
     // No SDL API, DXVK dlopen or window call precedes file validation.
+#if defined(SA2_SDL_LINKED_STATIC)
+    // The iOS app (host/ios) links SDL into its own executable, which code signing rewrites after
+    // the build, and a sideloading tool signs again: no SHA-256 taken when it was built can name the
+    // file. There SDL is held to its version and revision alone (the exact header expectation
+    // below), and the pin names the executable that carries it, unhashed.
+    sdl_identity_ok_ = files_.count("libSDL3") && !files_.at("libSDL3").path.empty();
+    if (!sdl_identity_ok_) return device_failure("the statically linked SDL could not be located in this executable");
+#else
     sdl_identity_ok_ = verify("libSDL3", sa2_host_expected::sdl_sha256);
     if (!sdl_identity_ok_) return device_failure("loaded SDL library SHA-256 differs from the build expectation");
+#endif
 #if !SA2_PLAYER_GPU
     // (sa2_player_gpu loads no library but SDL: its renderer is its own file, files.player.)
     dxvk_identity_ok_ = verify("libdxvk_d3d9", sa2_host_expected::dxvk_sha256);
@@ -1935,8 +1944,9 @@ bool Player::setup_window(uint32_t width, uint32_t height) {
     if (!width || !height || width > 16384 || height > 16384)
         return device_failure(strf("invalid presentation window dimensions %u x %u", width, height));
     if (win_) {
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(SA2_IOS)
         // android_app.py arm_portable: Android's window is the screen; Present scales onto it.
+        // iOS's too (host/ios): a UIKit window is the screen, and SDL cannot resize it.
         (void)SDL_SetWindowSize(win_, int(width), int(height));
 #else
         if (!SDL_SetWindowSize(win_, int(width), int(height)))
@@ -1947,8 +1957,14 @@ bool Player::setup_window(uint32_t width, uint32_t height) {
     }
     // The game's name alone: the host and the stream are the report's (and the launcher's record's).
     const std::string title = "Sonic Adventure 2";
-    win_ = SDL_CreateWindow(title.c_str(), int(width), int(height),
-                            SDL_WINDOW_VULKAN | (o_.hidden ? SDL_WINDOW_HIDDEN : 0));
+#if defined(SA2_IOS)
+    // iOS (host/ios): the renderer's device is SDL_gpu's Metal one (host/d3d9gpu make_sdl_gpu), so
+    // the window is a Metal one, the whole screen, at the screen's own pixels (not its points).
+    const SDL_WindowFlags api = SDL_WINDOW_METAL | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+#else
+    const SDL_WindowFlags api = SDL_WINDOW_VULKAN;
+#endif
+    win_ = SDL_CreateWindow(title.c_str(), int(width), int(height), api | (o_.hidden ? SDL_WINDOW_HIDDEN : 0));
     if (!win_) return device_failure(strf("SDL_CreateWindow: %s", SDL_GetError()));
     window_created_ = true;
     input_window_id_ = SDL_GetWindowID(win_);
@@ -2019,6 +2035,13 @@ void Player::pin_host_files() {
     const bool sdl_found = sdl_n > 0 && sdl_n < sizeof sdl_file / sizeof sdl_file[0]
                            && GetProcAddress(sdl_module, "SDL_Init") != nullptr;
     pin("libSDL3", sdl_found ? fs::path(std::wstring(sdl_file, sdl_n)).string() : "");
+#elif defined(SA2_SDL_LINKED_STATIC)
+    // SDL is part of this executable (validate_host_files says why it is not hashed): its path, by
+    // SDL_Init's own address, which needs no exported symbol table.
+    Dl_info info{};
+    Pin sdl;
+    if (dladdr(reinterpret_cast<const void*>(&SDL_Init), &info) && info.dli_fname) sdl.path = sdl.real = info.dli_fname;
+    files_["libSDL3"] = sdl;
 #else
     Dl_info info{};
     void* sdl_init_symbol = dlsym(RTLD_DEFAULT, "SDL_Init");
@@ -2144,6 +2167,12 @@ bool Player::create_device(const Sa2Record& r, Cat* cat) {
     if (!setup_window(bb_w_, bb_h_)) return false;
     pump_events();
     if (stop_) return false;
+#if defined(SA2_IOS)
+    // iOS (host/ios): SDL is linked into the app and built without Vulkan (tools/s9/ios_app.py,
+    // SDL_VULKAN=OFF); the renderer's device is SDL_gpu's Metal one. There is no Vulkan instance
+    // extension to ask for (SDL_Vulkan_GetInstanceExtensions calls a video-driver hook UIKit leaves
+    // null without Vulkan) and no libSDL3 to find by name, so neither check applies.
+#else
     Uint32 nexts = 0;
     if (!SDL_Vulkan_GetInstanceExtensions(&nexts) || !nexts)
         return device_failure(strf("SDL_Vulkan_GetInstanceExtensions: %s", SDL_GetError()));
@@ -2165,6 +2194,7 @@ bool Player::create_device(const Sa2Record& r, Cat* cat) {
     else return device_failure("libSDL3.so.0 does not resolve to the SDL this process loaded (DXVK's WSI would "
                                "load another, or none)");
 #endif
+#endif  // SA2_IOS
     using Create9 = IDirect3D9* (*)(UINT);
 #if SA2_PLAYER_GPU
     // host/d3d9gpu's factory, linked into this binary: no library to load or verify; the
@@ -4513,7 +4543,7 @@ void Player::setup_pads() {
             stop_reason_ = "refused before the stream was read";
             return;
         }
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(SA2_IOS)
     touch_platform_ = true;                         // the phone's screen is its pad
 #endif
     if (const char* t = getenv("SA2_TOUCH_CONTROLS"); t && *t) touch_platform_ = std::strcmp(t, "0") != 0;

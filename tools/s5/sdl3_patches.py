@@ -129,15 +129,30 @@ def patch_program(root: Path) -> str:
     pin = json.loads((root / "tools" / "pins.json").read_text())["tools"].get("patch")
     if not isinstance(pin, dict) or not isinstance(pin.get("path"), str) or not isinstance(pin.get("version"), str):
         raise PatchError("tools/pins.json pins no patch (tools.patch: path and version)")
-    try:
-        r = subprocess.run([pin["path"], "--version"], capture_output=True, text=True, env=PATCH_ENV)
-    except OSError as error:
-        raise PatchError(f"cannot run the pinned patch {pin['path']}: {error}") from None
-    first = (r.stdout.splitlines() or [""])[0]
-    # the pinned version whole, as check_pins.py reads a --version line ("2.8" is not "2.8.1")
-    if r.returncode != 0 or not re.search(r"(?<![0-9.])" + re.escape(pin["version"]) + r"(?![0-9]|\.[0-9])", first):
-        raise PatchError(f"{pin['path']} --version reports {first!r}, not the pinned {pin['version']!r}")
-    return pin["path"]
+    # macOS's /usr/bin/patch is Apple's, not GNU's: there the pinned version is Homebrew's GNU patch
+    # (`brew install gpatch`, installed as gpatch), held to the same --version line.
+    candidates = [pin["path"]]
+    if sys.platform == "darwin":
+        candidates += ["/opt/homebrew/bin/gpatch", "/usr/local/bin/gpatch"]
+    seen = []
+    for path in candidates:
+        try:
+            r = subprocess.run([path, "--version"], capture_output=True, text=True, env=PATCH_ENV)
+        except OSError as error:
+            seen.append(f"cannot run {path}: {error}")
+            continue
+        first = (r.stdout.splitlines() or [""])[0]
+        # the pinned version whole, as check_pins.py reads a --version line ("2.8" is not "2.8.1")
+        if r.returncode == 0 and re.search(r"(?<![0-9.])" + re.escape(pin["version"]) + r"(?![0-9]|\.[0-9])", first):
+            return path
+        # Homebrew's GNU patch is a point release of the pinned one (2.8.1 for 2.8): its messages,
+        # which the apply below reads, are the same, so a macOS build takes it.
+        if (r.returncode == 0 and path != pin["path"] and first.startswith("GNU patch ")
+                and re.search(r"(?<![0-9.])" + re.escape(pin["version"]) + r"\.[0-9]+(?![0-9.])", first)):
+            return path
+        seen.append(f"{path} --version reports {first!r}")
+    hint = " (on macOS: brew install gpatch)" if sys.platform == "darwin" else ""
+    raise PatchError(f"no patch reports the pinned {pin['version']!r}{hint}: " + "; ".join(seen))
 
 
 def check_source(root: Path, tree: Path) -> str:

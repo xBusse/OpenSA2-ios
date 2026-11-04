@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- host/ios/SA2Recomp.entitlements: none beyond a signed app's own, so a free account and every
+     sideloading tool can sign it. The game is ahead-of-time code: no JIT, no dynamic-codesigning. -->
+<plist version="1.0">
+<dict/>
+</plist>

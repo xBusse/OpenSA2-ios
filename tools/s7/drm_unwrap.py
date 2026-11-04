@@ -379,7 +379,8 @@ def emulated_chain(by_kind: dict, sites: list[dict], site_differs: dict[int, boo
 
 
 def measure(root: Path, tables: list[dict] | None = None, relocated: set[int] | None = None,
-            sites: list[dict] | None = None, tool_root: Path | None = None) -> tuple[dict, dict]:
+            sites: list[dict] | None = None, tool_root: Path | None = None,
+            with_replays: bool = True) -> tuple[dict, dict]:
     tool_root = root if tool_root is None else tool_root
     pins = json.loads((root / PINS).read_text())["executables"]
     a_bytes, b_bytes = (root / SHIPPED).read_bytes(), (root / UNPACKED).read_bytes()
@@ -445,7 +446,7 @@ def measure(root: Path, tables: list[dict] | None = None, relocated: set[int] | 
     union_total, union_diff = differing(va, vb, lo, jt_ranges + em_ranges)
 
     replays, problems = {}, []
-    for name, records in replay_runs(root).items():
+    for name, records in (replay_runs(root) if with_replays else {}).items():
         runs, seen = [], set()
         for rec in records:
             path = root / rec["path"]
@@ -506,7 +507,8 @@ def measure(root: Path, tables: list[dict] | None = None, relocated: set[int] | 
                    "unpacked": {"path": UNPACKED, "sha256": b_sha},
                    "pins": {"path": PINS, "sha256": sha256(root / PINS), "match": True},
                    "replays": {"path": REPLAYS, "sha256": sha256(root / REPLAYS)},
-                   "tick_replay": {"path": TICK_RECEIPT, "sha256": sha256(root / TICK_RECEIPT)},
+                   "tick_replay": {"path": TICK_RECEIPT,
+                                   "sha256": sha256(root / TICK_RECEIPT) if with_replays else None},
                    "tools": {t: sha256(tool_root / t) for t in TOOLS}},
         "runtime_maps": {k: v or "yes" for k, v in refusals.items()},
         "regions": [{"va": f"{g['lo']:#010x}", "end": f"{g['hi']:#010x}", "kind": g["kind"],
@@ -615,11 +617,36 @@ def write(root: Path, receipt: dict, companion: dict) -> dict:
     return receipt
 
 
+def readset_only(root: Path) -> int:
+    """The private companion alone (the read-set tools/s7/text_readset.py builds the overlay table
+    from), on a machine without the registered replays' run records: the companion is made of the
+    two executables and the lifted build's censuses, never of the replays, so it is computed with the
+    replays left out and written only when its digest is the one the tracked receipt pins. The
+    tracked receipt is not touched."""
+    held = json.loads((root / RECEIPT).read_text())
+    want = (held.get("companion") or {}).get("sha256")
+    _receipt, companion = measure(root, with_replays=False)
+    got = digest(companion)
+    if got != want:
+        print(f"DRM_READSET_REFUSED the read-set computed here ({got[:16]}) is not the one {RECEIPT} "
+              f"pins ({str(want)[:16]}): the executables, the lift or the census tools differ")
+        return 1
+    (root / COMPANION).parent.mkdir(parents=True, exist_ok=True)
+    (root / COMPANION).write_text(json.dumps(companion, indent=1, sort_keys=True))
+    print(f"DRM_READSET_OK {COMPANION} ({got[:16]}, the digest {RECEIPT} pins)")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--check", action="store_true",
                         help="compute again and fail if the tracked receipt or companion differs")
+    parser.add_argument("--readset-only", action="store_true",
+                        help="write only the private companion, checked against the tracked receipt's "
+                             "digest of it, without the replays' run records (a new build machine)")
     args = parser.parse_args()
+    if args.readset_only:
+        return readset_only(ROOT)
     receipt, companion = measure(ROOT)
     if args.check:
         problems = check(ROOT, receipt, companion)

@@ -9,6 +9,9 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
+#if defined(__APPLE__)
+#include "sa2_poll_select.h"   // host/: Darwin's waits on the session's pipes, through select()
+#endif
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -95,10 +98,25 @@ Fd open_fifo_holder(const std::string& path, std::string* error) {
 
 bool make_pipe(Fd& r, Fd& w, std::string* error) {
     int p[2];
+#if defined(__APPLE__)
+    // Darwin has no pipe2: the same pipe, each end close-on-exec right after (the iOS app, which
+    // is the only Darwin host, starts no other program, so nothing can inherit them in between).
+    if (pipe(p) != 0) {
+        if (error) *error = err("pipe");
+        return false;
+    }
+    if (fcntl(p[0], F_SETFD, FD_CLOEXEC) != 0 || fcntl(p[1], F_SETFD, FD_CLOEXEC) != 0) {
+        if (error) *error = err("fcntl FD_CLOEXEC");
+        close(p[0]);
+        close(p[1]);
+        return false;
+    }
+#else
     if (pipe2(p, O_CLOEXEC) != 0) {
         if (error) *error = err("pipe");
         return false;
     }
+#endif
     r = p[0];
     w = p[1];
     widen_pipe(p[1]);
@@ -137,7 +155,11 @@ bool write_all(Fd fd, const void* buf, size_t n) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN) {
                 struct pollfd q = {int(fd), POLLOUT, 0};
+#if defined(__APPLE__)
+                (void)sa2_poll_fds(&q, 1, 100);
+#else
                 (void)poll(&q, 1, 100);
+#endif
                 continue;
             }
             return false;
@@ -151,7 +173,11 @@ bool write_all(Fd fd, const void* buf, size_t n) {
 int wait_readable(Fd fd, int timeout_ms) {
     struct pollfd q = {int(fd), POLLIN, 0};
     for (;;) {
+#if defined(__APPLE__)
+        int r = sa2_poll_fds(&q, 1, timeout_ms);
+#else
         int r = poll(&q, 1, timeout_ms);
+#endif
         if (r < 0 && errno == EINTR) continue;
         if (r < 0) return -1;
         return r > 0 ? 1 : 0;

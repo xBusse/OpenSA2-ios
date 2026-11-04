@@ -48,7 +48,7 @@ The stream contract is in `host/sa2_stream.h`. Its writer is `host/sa2_present_r
 
 The default renderer, `host/d3d9gpu/`, maps recorded Direct3D 9 behavior to SDL3's GPU API. Shader translation uses DXVK and dxbc-spirv code. Linux also has a DXVK Native player, which provides a reference renderer for comparisons.
 
-SDL3 provides the window, audio device, and host input. Android adds an app lifecycle and touch overlay around the same player and stream. A future macOS port still needs platform work and validation.
+SDL3 provides the window, audio device, and host input. Android adds an app lifecycle and touch overlay around the same player and stream. iOS runs the same player and stream with the game on a thread of the app (iOS starts no other program), and draws through SDL_gpu's Metal device with each shader converted to MSL ([iOS guide](ios.md)). A future macOS port still needs platform work and validation.
 
 ## Verification and its limits
 
@@ -74,10 +74,12 @@ Desktop development builds currently use a faster floating-point mode that holds
 | `host/player/` | Stream reader, audio mixer, input, texture decoding, and touch overlay. |
 | `host/d3d9gpu/` | Direct3D 9 state and shader translation through SDL3's GPU API. |
 | `host/android/` | Android setup, lifecycle, and native session integration. |
+| `host/ios/` | The iOS app: the game on a thread of the app's own process, its session, setup and debug screens ([iOS guide](ios.md)). |
 | `tools/s2/` and `tools/s3/` | Translation, compilation, jump-table paths, and generated dispatch tables. |
 | `tools/spike/pc24pass/` | x87 precision and instruction-semantics passes. |
 | `tools/s4/` | Runtime integration, extra blocks, and replay tools. |
 | `tools/s7/` and `tools/s8/` | Cross builds, desktop assembly, Android builds, and performance experiments. |
+| `tools/s9/` | The iOS builds: the game as one prelinked library, the app's libraries and Xcode project. |
 | `harness/` | Function and replay comparison code. |
 
 The [getting-started guide](getting-started.md) describes which checks you can run from the public source preview.
