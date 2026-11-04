@@ -63,7 +63,7 @@ struct DebugView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Debug")
-        .fileImporter(isPresented: $pickingStream, allowedContentTypes: [.data]) { r in
+        .fileImporter(isPresented: $pickingStream, allowedContentTypes: [.item]) { r in
             guard case .success(let url) = r else { return }
             _ = url.startAccessingSecurityScopedResource()          // held: the player reads it on its own
             playStream(url.path)

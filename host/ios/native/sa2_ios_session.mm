@@ -483,7 +483,14 @@ int play_stream(const sa2ios_play_args& a, std::string& session) {
                 }
     }
     std::string stream = a.stream;
-    if (stream.size() > 3 && stream.compare(stream.size() - 3, 3, ".gz") == 0) {
+    // A gzip'd stream (the stream recorder's), by its magic bytes 1f 8b, whatever its name.
+    bool gzipped = false;
+    if (FILE* probe = std::fopen(stream.c_str(), "rb")) {
+        unsigned char m[2] = {0, 0};
+        gzipped = std::fread(m, 1, 2, probe) == 2 && m[0] == 0x1f && m[1] == 0x8b;
+        std::fclose(probe);
+    }
+    if (gzipped) {
         stream = gunzip_stream(stream, g_caches + "/stream.sa2s");
         if (stream.empty()) { end_session(session); return 4; }
     }
